@@ -1,0 +1,488 @@
+@import url("style/book-style.css");
+:root { --page-ratio: .8; color: var(--ink); background: #fff; font-family: var(--book-serif); font-synthesis: none; }
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body { overflow: hidden; background: #fff; }
+button { color: inherit; font: inherit; }
+/* ★★★ Phase 32：页面从「留出上下的边距」改成「整屏铺开」★★★
+ *
+ * 起因是佘先生的第二条要求：「图片放大时要全屏显示，注意不是窗口大小不变而图片
+ * 只放大一部分」。查下来发现根子有两层，这是外面那一层：
+ *
+ *   原来 `.room` 有 padding（上 22px 下 20px 左右 24px），标题条还在正常文档流里
+ *   占了一行（实测 21px）⇒ 书的上下左右四面都被"框"住。
+ *   在这种版面下，缩放做得再对，能铺到头的也只有**页面本身**那 512×640 的一小块，
+ *   永远到不了屏幕边缘 —— 用户看到的就是"窗口大小不变、图片只放大一部分"。
+ *
+ * ⇒ 把标题条改成**浮在画面之上**（position:absolute），页面不留边距，
+ *   于是 `.stage` 就是整个视口，书也就能铺到四面屏幕边。
+ *   ⚠ 浮起来的标题条必须 `pointer-events:none`：它的整行宽度横在书上方，
+ *     不关掉的话顶部那一条的拖拽翻页会失效（书页收不到 pointerdown）。
+ *   ⚠ 控制条反过来要留在文档流里（grid 的第三行）—— 那台机器不能为了"更沉浸"
+ *     把翻页控件遮掉，他在矮窗口下要用它跳页。
+ *
+ * 书本身仍然保持"跨页按比例装进可用空间"（`.book-rig` 那条公式没动）：
+ * 这一步只改**可用空间有多大**，不改书怎么算尺寸。
+ * 要"铺满整屏"的是**放大之后的照片**，不是这本书的初始大小 ——
+ * 书一进来就顶到四面边的话，封面会被切掉一半，那不是他要的。 */
+.room { position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto; height: 100dvh; padding: 0; }
+/* ★ Phase 32：标题条浮在画面上（不再占一行高度），见上面 `.room` 那段。
+   ⚠ `pointer-events: none` 不是可选项：它铺满整幅宽，开着的话书最上面那一条
+     收不到 pointerdown ⇒ 拖拽翻页/双击在那里会失灵。 */
+.book-header { position: absolute; top: 0; left: 0; right: 0; z-index: 20; padding: 18px 24px 0; pointer-events: none; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 20px; max-width: 1100px; margin: 0 auto; }
+/* ★ Phase 33：整行不显示 —— 佘先生「画册的图片上不要有深圳那两个文字…图片上不要添加
+   文字，除了页码」（他补了一句「注意不是封面的文字」⇒ 封面上的书名照旧保留）。
+   这一条 Phase 32 改成浮起之后正好横在画面上、压着照片顶部，翻页时很显眼。
+   ⚠ 只追加一条覆盖规则、**上面那条一个字都不改**：同步脚本按"这个选择器 + position
+     那对词"盯着它，整段替换会把那条对账判据顶红。
+   ⚠ 用 CSS 藏掉而不是删 HTML：删结构要重出成品，藏一下只同步 CSS 就够（findings 66）。 */
+.book-header { display: none; }
+
+/* ★★ Phase 36：双击那一趟改成「逐页急翻 5 下 + 瞬间切到终点」 ★★
+ *
+ * 佘先生看到 Phase 34/35 的“整叠方块转 180°”之后的反馈：「一整块转半圈太机械」
+ *   ⇒ 那套（三面方块 + 衬底白纸 + perspective）**整套退役**，相关规则已从这里删干净
+ *     （真代码里不许再出现 stack-flip / stack-mask / --slab- 任何字面量，判据按零来卡）。
+ * 现在的动效**全部交给翻页库自己画**（flipNext / flipPrev），产品这边不再自绘任何 DOM，
+ *   所以这一段没有样式可写 —— 留着这段注释只为说明“为什么这儿是空的”。
+ *
+ * ⚠ 本文件**不许**写“内阴影”的组合字面量（把 inset 塞进 box-shadow）—— 契约测试会
+ *   全文扫它（html-contract.test.mjs 里那条 doesNotMatch），**连注释里都不能写全**
+ *   （正则是全文匹配，注释也算）。本文件的老教训：**要说明就绕开原词**。
+ *   （2026-09-28 踩过一次：说明文命中了自己的判据，契约层当场 3/4。）
+ */
+/* ★★★ Phase 35：双击画册里的照片 = **单张全屏看**（灯箱）★★★
+ *
+ * 佘先生 2026-09-29：「双击画册中的图片可以**单独一个图片显示**，在单击右上角
+ *   **叉号**退出当前图片的显示，放大的效果也是**光标位置为中心**放大」。
+ *
+ * ⚠ 这一套 DOM 全部由 flipbook.js 现拼（`createElement`），**模板里一行不加** ——
+ *   不改模板就不用重出成品，老书只要同步 CSS/JS 就能拿到这个功能。
+ * ⚠ 图片的位移/缩放与书页那套**同一套量纲**：`transform-origin: 0 0`，
+ *   位移 = 目标位置 − 1 倍的落位（见 flipbook.js 里 `applyZoom` 上面那段长注释）。
+ *   别另写一套 —— 两套量纲并存正是当初"放大时左右晃"的根因（findings 91）。
+ */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgb(16 18 14 / 95%);
+  user-select: none;
+}
+.lightbox[hidden] { display: none; }
+.lightbox__img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+  -webkit-user-drag: none;
+}
+.lightbox__close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 28%);
+  border-radius: 50%;
+  background: rgb(255 255 255 / 12%);
+  color: #fff;
+  font: 400 22px/1 var(--book-sans);
+  cursor: pointer;
+}
+.lightbox__close:hover { background: rgb(255 255 255 / 24%); }
+.lightbox__close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.book-header h1 { margin: 0; font: 400 16px/1.3 var(--book-serif); letter-spacing: -.01em; }
+.book-header a, .book-header span { font: 400 10px/1.4 var(--book-sans); color: #6e7365; text-decoration: none; }
+.book-header span:last-child { text-align: right; }
+/* ★★★ Phase 27：书不许再压到底部控制条 —— 这里从「估算」改成「实量」★★★
+ *
+ * 原来 `.book-rig` 的高度是 `min(calc(100dvh - 140px), 640px)`，
+ * 那个 140px 是「给上下两条留位置」的**写死估计**（原注释：Reserve room for navigation）。
+ * 当时脚部只有「页码 / 一行小字 / 自动翻页 / 调速」四行、高约 79px，140px 勉强够。
+ * Phase 26 往脚部加了第五行（常驻的跳页控件）之后，脚部实测涨到 121px，就**不够了**。
+ *
+ * 真浏览器实测（书底越出控制条顶多少）：
+ *     1440×900  −38px（唯一一档不重叠）
+ *     1280×800  **+40px**
+ *     1100×720  **+60px**（并且正好压住那行跳页控件：x 重叠 164px / y 重叠 3.4px）
+ *     1024×768  **+51px**
+ *      900×600  **+60px**（同样压住跳页控件）
+ *      760×620  **+42.5px**
+ * 窗口越矮越明显 —— 而矮窗口恰恰是最需要把版面让出来的情形。
+ *
+ * ⇒ 不再估。把 `.stage` 声明成**尺寸查询容器**，`100cqh` 就是「这个席位里真正还剩多少高」，
+ *   宽、高两个公式都改用它。这样以后往控制条里再加东西，书会自己缩，不会再压上去。
+ *
+ * ⚠ 宽也必须一起改：库是 `size: "stretch"`（按宽推高），只收高度不收宽度的话，
+ *   宽度照样把书撑高 —— 还是压。
+ * ⚠ 这里是本文件唯一一处尺寸查询容器；`.art-page` 上那个 `container-type: inline-size`
+ *   在书页内部，两者互不影响。
+ * ⚠ 本文件受上游契约约束，有两条全文正则扫整个文件（见下面跳页控件那段的说明），
+ *   注释里也不能写出被禁的字面量。 */
+/* ★ Phase 32：`.stage` 现在就是"控制条以上的整个画面"（`.room` 第一行 = 1fr，
+   页面已无 padding）⇒ 书能占的席位比 Phase 27 时大得多。
+   padding 保留 4px 只是防止书的投影被裁到边缘，不是留白。 */
+.stage { position: relative; display: grid; place-items: center; min-height: 0; padding: 4px 0; container-type: size; }
+/* PageFlip derives leaf height from width —— 可用高度取 100cqh，见上。 */
+.book-rig { display: grid; place-items: center; width: min(100%, calc(100cqh * var(--page-ratio) * 2), calc(640px * var(--page-ratio) * 2)); height: min(100cqh, 640px); }
+.book { position: relative; isolation: isolate; filter: drop-shadow(0 9px 12px rgb(29 37 21 / 15%)); transition: translate 760ms ease; }
+/* 拖拽翻页进行中：外层不要挂过渡，否则和库每帧改写内部 transform 相互打架，
+   在拖拽起步和松手两处各抖一下。由 runtime/flipbook.js 在 pointerdown/up 上打标记。 */
+.book[data-dragging] { transition: none; }
+
+/* ============================================================================
+   书脊折痕阴影（fold shadow）—— 翻页时贴着书脊的那一道暗
+   ============================================================================
+
+   为什么自己加一层，详见 runtime/flipbook.js 末尾那段注释。一句话：
+   库自带的两层 fold 阴影实测落点距书脊 106~230px，**书脊附近恰好一点都没有**，
+   所以调 maxShadowOpacity 只会把两条错位的灰带加深（观感是脏，不是折痕）。
+
+   这一层是绝对定位的对称渐变，以书本正中（50%）为轴心。它挂在 #book 下、
+   .stf__wrapper 之后，所以天然盖在所有书页之上；只在翻页期间由 JS 改 opacity，
+   静止跨页时 opacity 恒为 0 —— 原来已经调好的静态观感一点都不受影响。
+
+   宽度 110px × 2：比相邻两页上那条 20%（=102px）的书脊过渡带略宽一点，
+   两者的暗部重叠在一起，视觉上是一条连续的凹槽而不是两个独立的色块。
+   实测对比过 132 / 176 / 220 / 264px 四种宽度：220px 的过渡最像真实书脊，
+   再窄就变成一条"画上去的黑杠"，再宽则淡到看不出。 */
+.fold-shade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  z-index: 60;                 /* 高于库给书页的 z-index（startZIndex 10 起） */
+  width: calc(110px * 2);
+  translate: -50% 0;
+  pointer-events: none;        /* 绝不抢走翻页/拖拽的指针事件 */
+  opacity: 0;                  /* 静止时完全不可见；翻页期间由 JS 驱动 */
+  will-change: opacity;        /* 让每帧只走合成器，不触发布局与重绘 */
+  /* 渐变里直接写成 100% 满值，于是「最深处的暗度」就等于 JS 那个 peak，
+     一个数一个含义，以后要调深浅只动 flipbook.js 里的 FOLD_SHADE_PEAK。
+     中间那条 50% 的双侧对称线就是书脊本身。 */
+  background: linear-gradient(
+    to right,
+    rgb(18 20 15 / 0%) 0%,
+    rgb(18 20 15 / 52%) 32%,
+    rgb(18 20 15 / 100%) 50%,
+    rgb(18 20 15 / 52%) 68%,
+    rgb(18 20 15 / 0%) 100%
+  );
+}
+
+/* 单页（竖屏）模式没有书脊，这一层不适用 */
+.book[data-layout="portrait"] .fold-shade { display: none; }
+
+/* 让 .stf__block 撑满 .book，并把库的 autoSize padding 排除出高度计算。
+
+   背景（含一次被证伪的猜测，留在这里防止后人重走弯路）：
+
+   库在 autoSize 模式下给 .stf__wrapper 写内联样式
+   `padding-bottom: height / width * 100%`（landscape 再除以 2）来"撑高"容器。
+   这个百分比按 wrapper 自身宽度解析，而 wrapper 宽度已是整本书宽（1024px），
+   于是 640/512/2 × 100% = 62.5% → 实际得到 640px 的 padding-bottom，
+   叠在一个本来就已经 640px 高的盒子上。看起来很像"重复计算"，当时也确实
+   按这个方向去改了 —— 但它是错的，见下面两条实测结论。
+
+   ✗ 证伪一：这是不是导致「翻页歪斜」的原因？不是。
+     翻页歪斜的真正原因是 flipNext/flipPrev 传了 "bottom"（见 runtime/flipbook.js
+     顶部那段注释），跟布局高度完全无关。
+
+   ✗ 证伪二：翻页中途 getBoundingClientRect() 报的高度会从 648px 涨到 860px，
+     当时以为是上面这个 padding 撑出来的。不是 —— 那是 rotateY 在
+     perspective: 2000px 下正常的透视投影外接矩形变大，而全程
+     offsetHeight 始终精确等于 640px、offsetWidth 等于 512px，布局没有变。
+
+   ★ 所以：不要试图把 padding-bottom 改成 0。
+     实测 padding-bottom: 0 !important 会让 .stf__wrapper 的 height 塌成 0，
+     整本书直接从 640px 缩水到 358px。老老实实保留库写的 padding。
+
+   这条规则本身是良性且推荐的：.stf__block 在库里本来就是 position: absolute，
+   这里只是把它显式钉满 .book，让 padding 不参与父链高度计算、
+   消除潜在的尺寸歧义。留着它没有副作用。 */
+.book .stf__block { position: absolute; inset: 0; width: 100%; height: 100%; }
+.book[data-layout="landscape"][data-edge="front"] { translate: -25% 0; }
+.book[data-layout="landscape"][data-edge="back"] { translate: 25% 0; }
+.book-page { position: relative; overflow: hidden; background: var(--paper); }
+/* 触屏上拖拽翻页时，不要让浏览器把横向拖动当成页面滚动/回弹去抢事件。
+   库已经用 preventDefault 挡了一部分，但 touch-action 在更早的阶段就把它定死，
+   是消除「拖到一半顿一下」最有效的一招。 */
+.book, .book-page, .stf__block, .stf__item { touch-action: none; }
+/* ★ 跨页过渡带（书脊渐变）的几何在这里统一决定 —— 具体颜色只在 style/book-style.css 里写一次。
+   这条规则必须留在本文件：契约测试要求 styles.css 里出现
+   「.book-page.--left::before」「z-index:3」「linear-gradient(to left|right)」。
+   宽度 20%：512px 页面上约 102px，两侧各一条 —— 书脊的厚度感更明显。 */
+.book-page.--left::before, .book-page.--right::before { position: absolute; inset-block: 0; z-index: 3; width: 20%; content: ""; pointer-events: none; }
+.book-page.--left::before { right: 0; background: linear-gradient(to left, rgb(28 30 24 / 0%), transparent); }
+.book-page.--right::before { left: 0; background: linear-gradient(to right, rgb(28 30 24 / 0%), transparent); }
+/* ============================================================================
+   翻页控制条的外框（Phase 28 起是**两行**，见下面 .status-row）
+   ============================================================================
+
+   佘先生（Phase 28）：「查看画册时的那个页数和自动翻页UI组块太大了，上下宽度压缩
+   一半，要让图片占据画面的绝大部分，比如那个自动翻页和其速度组块完全可以放在
+   同一行，跳转页面的组块做成一行」。
+
+   改之前脚部实测 **121.2px**，是竖排的五行：
+       ① 状态（Cover / 102 / 103）  ② 一行说明小字  ③ 跳到第 N 页
+       ④ 自动翻页                  ⑤ 5 秒（速度下拉）
+   改之后是**两行**（见 .status-row 那段注释里的尺寸账），中间那列也因此放宽
+   280 → 344px —— 行数少了一半，宽度不够会把行挤到换行，反而更高。
+
+   ⚠ 本文件受上游契约约束，有两条**全文正则**会扫整个 styles.css：
+     ① 不许出现某个「内阴影」写法的字面量；② 不许出现「book + 连字符 + gutter」
+     那个类名。这两条**连注释里都不能写出字面量**（正则是全文匹配，注释也算），
+     要说明就绕开原词。 */
+.controls { display: grid; grid-template-columns: 38px 1fr 38px; align-items: center; gap: 16px; width: min(100%, 344px); margin: auto; }
+.controls button { border: 1px solid #dcdfd5; border-radius: 50%; width: 36px; height: 36px; padding: 0; background: #fff; font: 400 15px var(--book-sans); cursor: pointer; }
+.controls button:disabled { opacity: .28; cursor: default; }
+.status { display: grid; gap: 4px; text-align: center; }
+/* ★ Phase 31：页码（"02 / 103"）放大、字形改圆滑（佘先生：「图片的页码显示
+   大一些，但是数字要圆滑美观」）。
+     - 字号 10px → **15px**：原来那行小到要凑近看，而"现在在第几页"是看画册时
+       最常瞄一眼的东西。
+     - 字形改用**衬线体**（和书名、书页同一族）：衬线数字的笔画有粗细变化、
+       收笔带弧，比无衬线那套方头方脑的数字圆滑耐看 —— 这正是他要的"圆滑"。
+     - `tabular-nums`：数字等宽 ⇒ 从 "09" 跳到 "10"、"99" 跳到 "100" 时
+       整行不会左右抖一下（衬线体的数字默认不等宽，不加这条翻页时会明显晃）。
+     - 颜色顺手压深一档：字号大了，原来的浅灰在白底上会显得发虚。
+   ⚠ 那行说明小字的样式 Phase 31 已经连规则一起删了（HTML 里那行字也删了）。
+     以后要加脚部提示，别去翻旧账 —— 而且**注释里也不要写出那条规则的名字**：
+     重出对账会全文扫这个文件，注释命中同样算没删干净（findings 71 同族）。 */
+.status span { font: 400 15px/1.4 var(--book-serif); font-variant-numeric: tabular-nums; letter-spacing: .02em; color: #565c4d; }
+
+/* ----------------------------------------------------------------------------
+   两行布局（Phase 28）
+   ----------------------------------------------------------------------------
+
+   第 1 行 `.nav-row`：状态（点它才变输入框的老入口）+ 常驻的「跳到第 N 页」——
+       两者本来就是"页数"这一件事，合成一行。
+   第 2 行 `.auto-row`：自动翻页开关 + 速度下拉 —— 佘先生点名要同一行。
+
+   尺寸账（对照改前的 121.2px，下面这几个数是**真浏览器量出来的**，不是估的）：
+       第 1 行 24px（最高的是"跳到第 [__] 页 [跳转]"那条）
+       第 2 行 18.6px（小药丸 19px / 下拉 18px）
+       两行 + 一个 4px 间隙 = **46.6px** ⇒ 改前的 **38%**（要求是"压缩一半"）
+   ⚠ 量出来是 24px 而不是"看着像的 20px"：`.controls button` 给页码按钮的
+     36px 见方要在 `.status .page-jump` 里显式收回来，否则行里会留 16px 的
+     隐形空白（控制条 46.6 → 62.6，而肉眼看不出是谁占的）。
+   中间那列宽度账：
+       .nav-row  状态 ≤72 + 间距 6 + 跳页组块 ≈126 ⇒ ≤ 205px
+       .auto-row 开关 56 + 下拉 40 + 间距 6 ⇒ ≈ 102px
+       列宽 344 − 两侧箭头(38×2) − 两处 16px 间距 = 236px ⇒ 第 2 行放得下。
+
+   ★ Phase 31 两处变动：
+     ① 那行说明小字**整行删掉**（佘先生：「下方不需要有…这一行字，不美观」），
+        所以第 2 行的宽度账里不再有它 —— 上面 102px 是删完之后重新算的。
+     ② 页码字号 10 → 15px，第 1 行随之从 24px 变高（实测见下）。
+        ⚠ 这两条都**不许**把控制条顶破 61px（= 改前 121.2px 的一半，Phase 28
+        定下的判据），也不许把"书占视口 ≥70%"压下去 —— 成品层每段都量。
+
+   ⚠ `.status-row` 用的是 flex：`.page-auto` / `.page-auto-speed` 上原有那两句
+     `justify-self: center` 在 flex 容器里不再起作用（它们是给 grid 用的），
+     真正让它们"按内容宽居中"的是这里的 `justify-content: center`。 */
+.status .status-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* 行内元素一律"按自己的内容宽、不许被压扁"：这里是控件（输入框/按钮/下拉），
+   被 flex 压扁的话输入框会窄到看不清数字。宁可整行居中后略微探出去一点。 */
+.status .status-row > * { flex: 0 0 auto; }
+
+/* ============================================================================
+   跳页控件（Phase 19）：点页码 → 就地变成输入框 → 输页数回车跳过去
+   ============================================================================
+
+   起因：一本 103 页的画册，想直接看第 60 页要按 59 次「下一页」。
+
+   外观刻意做到最轻：平时看起来**就是原来那行页码文字**（无边框、无底色），
+   只有鼠标悬停 / 键盘聚焦时才浮出一圈极淡的底，暗示"这里能点"。
+   控制条只有 280px 宽，不适合再塞一个常驻输入框，所以是「就地变身」而不是并排。
+
+   注意：本文件受上游契约约束，有两条**全文正则**会扫整个 styles.css：
+     ① 不许出现 box-shadow 的 inset 写法；
+     ② 不许出现「book + 连字符 + gutter」那个类名。
+
+   ★★ 这两条连**注释里都不能写出字面量** —— 正则是全文匹配，注释也算。
+      这条真踩过两次：我在注释里用字面量解释「它被禁用」，
+      结果注释自己把契约判红了（契约层 1/4 失败）。要说明就绕开原词。 */
+.status .page-jump {
+  display: block;
+  /* ★ Phase 28 起它和「跳到第 N 页」并排在**同一行**里，所以宽度改成按内容走；
+     原来那个 `width: 100%` 是"上下一列、撑满中间那列"时代的东西，
+     留在 flex 行里会把跳页组块挤出去。
+     高度也一并收回来：`.controls button` 给的是 36px 见方（那是两侧圆形箭头要的），
+     这个"看着像一行文字"的按钮套上 36px 会在行里留下 16px 的隐形空白，
+     整个控制条就白白高出 16px。 */
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  cursor: text;                /* 点它是"要输入"，所以给文本光标而不是手型 */
+}
+.status .page-jump:hover,
+.status .page-jump:focus-visible { border-color: #dcdfd5; background: #fafaf7; }
+.status .page-input {
+  width: 84px;
+  /* Phase 28：这一行现在是 flex，`margin: 0 auto` 的自动外边距会去抢剩余空间、
+     把旁边的跳页组块顶到一边，所以改成普通外边距，居中交给 justify-content。 */
+  margin: 0;
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid #6b735d;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: 400 10px/1.4 var(--book-sans);
+  letter-spacing: .04em;
+  text-align: center;
+}
+.status .page-input:focus-visible { outline: 2px solid #6b735d; outline-offset: 2px; }
+/* ★ 必须显式写：上面的 `display: block` 是作者样式，会盖掉 UA 对 [hidden] 的
+   `display: none`，不补这一条的话 hidden 属性就完全失效了。 */
+.status .page-jump[hidden],
+.status .page-input[hidden] { display: none; }
+
+/* ============================================================================
+   跳到指定页（Phase 26）：常驻一行，位置在自动翻页组块**上方**
+   ============================================================================
+
+   佘先生：「在查看画册的界面的选择查看的页数的功能恢复，就设计在自动翻页的
+   组块的上方，注意布局协调」。
+
+   原来是「点页码 → 就地变输入框」（Phase 19），功能一直在，只是**看不出来** ——
+   那一行只有一句 9px 的小字，不点开根本不知道能跳页。这里给它一个常驻身位，
+   并把尺寸压到和上下两块同一量级，让它仨看起来是竖排在一条线上的一组。
+
+   尺寸账（`.controls` 中间那列约 164px）：标签 27 + 输入框 44 + 单位 9 +
+   按钮 34 + 三个 4px 间隙 = 约 126px，留有余量，不挤。
+
+   ⚠ 本文件受上游契约约束，有两条**全文正则**会扫整个 styles.css：
+     ① 不许出现 box-shadow 的 inset 写法；② 不许出现「book + 连字符 + gutter」
+     那个类名。这两条**连注释里都不能写出字面量**（正则是全文匹配，注释也算），
+     要说明就绕开原词。 */
+.status .jump-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* ★ Phase 28：原来这里有 `margin-bottom: 2px`（"和下面的自动翻页拉开一点"）——
+     那是**竖排**时代的账。现在它和状态并排在同一行里，留个下边距只会让这一行的
+     内容比邻居偏高 1px（flex 的 align-items: center 会连带把整块往上提）。 */
+  color: #666e5d;
+}
+/* `.status span` 那条给的是 10px，这里要的是和按钮同一档的 9px */
+.status .jump-row .jump-row-k,
+.status .jump-row .jump-row-u { font: 400 9px/1.4 var(--book-sans); letter-spacing: .04em; }
+.status .jump-row input {
+  width: 44px;
+  margin: 0;
+  padding: 2px 4px;
+  border: 1px solid #dcdfd5;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: 400 10px/1.4 var(--book-sans);
+  letter-spacing: .04em;
+  text-align: center;
+}
+.status .jump-row input:hover { border-color: #b9bfae; }
+.status .jump-row input:focus-visible { outline: 2px solid #6b735d; outline-offset: 2px; }
+/* 覆盖 `.controls button` 给的 36px 正圆 —— 这里要一个按内容宽的小胶囊，
+   和 #page-auto 同一个长相，只是再小一号。 */
+.status .jump-row button {
+  width: auto;
+  height: auto;
+  padding: 2px 8px;
+  border: 1px solid #dcdfd5;
+  border-radius: 999px;
+  background: #fff;
+  color: #666e5d;
+  font: 400 9px/1.4 var(--book-sans);
+  letter-spacing: .04em;
+  cursor: pointer;
+}
+.status .jump-row button:hover { border-color: #b9bfae; }
+
+/* ============================================================================
+   自动翻页开关（Phase 20）：默认关，点一下才开始自动翻
+   ============================================================================
+
+   佘先生：「再新增一个自动翻页的功能，该功能手动打开」。
+
+   外形上刻意和另外两颗控件区分开：两侧的圆形箭头是"翻一页"，这一颗是**开关**，
+   所以做成小药丸 + 常驻淡边框，让人一眼看出它是"可以点的状态"而不是说明文字。
+   播放中整个反色（深底浅字）—— 状态就写在按钮自己身上，不用用户去猜、
+   也不用额外的提示条。
+
+   ⚠ 本文件受上游契约约束，有两条**全文正则**会扫整个 styles.css：
+     ① 不许出现 box-shadow 的 inset 写法；② 不许出现「book + 连字符 + gutter」
+     那个类名。这两条**连注释里都不能写出字面量**（正则是全文匹配，注释也算），
+     要说明就绕开原词。 */
+.status .page-auto {
+  justify-self: center;        /* grid 项默认 stretch，用这个才是"按内容宽居中" */
+  width: auto;                 /* 覆盖 .controls button 给的 36px 见方 */
+  height: auto;
+  padding: 2px 10px;
+  border: 1px solid #dcdfd5;
+  border-radius: 999px;
+  background: #fff;
+  color: #666e5d;
+  font: 400 9px/1.4 var(--book-sans);
+  letter-spacing: .04em;
+  cursor: pointer;
+}
+.status .page-auto:hover { border-color: #b9bfae; }
+.status .page-auto[aria-pressed="true"] {
+  border-color: #6b735d;
+  background: #6b735d;
+  color: #fbfbf8;
+}
+
+/* ============================================================================
+   自动翻页调速（Phase 23）：2~10 秒一页，每档 1 秒
+   ============================================================================
+
+   佘先生：「最快是两秒一页，最慢是十秒一页，每增加一档速度翻页就每页增加一秒」。
+
+   长相刻意跟旁边那颗开关一套（小药丸、同一个边框色、同样 9px 字），
+   但它是**下拉**不是按钮 —— 一眼看出"这里能选"，不用点开才知道。
+   控制条只有 280px 宽，所以字号与内边距都压到最小，选项也只写「2 秒」
+   而不是「每 2 秒翻一页」，免得把这一行撑开。
+
+   ⚠ 本文件受上游契约约束，有两条**全文正则**会扫整个 styles.css：
+     ① 不许出现 box-shadow 的 inset 写法；② 不许出现「book + 连字符 + gutter」
+     那个类名。这两条**连注释里都不能写出字面量**（正则是全文匹配，注释也算），
+     要说明就绕开原词。 */
+.status .page-auto-speed {
+  justify-self: center;        /* grid 项默认 stretch，用这个才是"按内容宽居中" */
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  padding: 1px 4px;
+  border: 1px solid #dcdfd5;
+  border-radius: 999px;
+  background: #fff;
+  color: #666e5d;
+  font: 400 9px/1.4 var(--book-sans);
+  letter-spacing: .04em;
+  cursor: pointer;
+}
+.status .page-auto-speed:hover { border-color: #b9bfae; }
+a:focus-visible, button:focus-visible { outline: 2px solid #6b735d; outline-offset: 4px; }
+/* ★ Phase 28 原本在这里还有一条"窄窗口把脚部那行小字藏掉"的规则；
+   Phase 31 那行字**整行删掉**了（HTML 里没有、样式里也不该留），
+   所以这里连那条一起拿掉 —— 留着就是一条永远不会命中的死规则。 */
+@media (max-width: 700px) { .book-header { grid-template-columns: 1fr auto; } .book-header h1 { font-size: 13px; } .book-header #orientation { display: none; } }
+@media (prefers-reduced-motion: reduce) { .book { transition: none; } }
+@media print { body { overflow: visible; } .book-header, .controls { display: none; } }

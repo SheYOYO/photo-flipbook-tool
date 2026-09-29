@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Book title</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="room">
+  <header class="book-header">
+    <span>Photographs</span><h1>Book title</h1><span id="orientation">Open spread</span>
+  </header>
+  <section class="stage" aria-label="Interactive photo book">
+    <div class="book-rig">
+      <div id="book" class="book" data-page-width="512" data-page-height="640">
+        <article class="book-page art-page cloth recto" data-density="hard" aria-label="Front cover">
+          <h2 class="cover-title">Book title</h2><p class="cover-subtitle">Photographs</p>
+        </article>
+        <article class="book-page art-page endpaper verso" aria-label="Page 1"></article>
+        <article class="book-page art-page paper recto" aria-label="Page 2">
+          <div class="title-block"><h2>Book title</h2><p>Photographs</p></div>
+        </article>
+        <article class="book-page art-page paper verso" aria-label="Page 3"></article>
+        <article class="book-page art-page paper recto" aria-label="Page 4">
+          <figure class="plate medium"><!-- Insert a user photograph with descriptive alt text. --></figure>
+        </article>
+        <article class="book-page art-page paper verso" aria-label="Page 5">
+          <div class="colophon"><p>Book title</p><p>Photographs and credits</p></div>
+        </article>
+        <article class="book-page art-page endpaper recto" aria-label="Page 6"></article>
+        <article class="book-page art-page cloth verso" data-density="hard" aria-label="Back cover">
+          <span class="back-mark">Book title</span>
+        </article>
+      </div>
+    </div>
+  </section>
+  <footer class="controls" aria-label="Book controls">
+    <button id="previous" type="button" aria-label="Previous page">←</button>
+    <!-- ★ Phase 28：中间那列从**五行**压成**两行**（佘先生：「上下宽度压缩一半」）。
+         第 1 行 = 状态 + 跳到第 N 页（都是"页数"这一件事）；
+         第 2 行 = 自动翻页 + 其速度下拉（他点名要同一行）。
+         两行之外不再各占一行：说明小字挪进第 2 行，窄窗口由 CSS 藏掉。
+         ⚠ .jump-row 必须保持在 #page-auto **之前**（DOM 顺序 + 几何位置都有断言守着）。 -->
+    <div class="status">
+      <div class="status-row nav-row">
+        <!-- 点页码 → 就地变输入框（Phase 19）。原来独占一行，Phase 28 起与常驻跳页并排。 -->
+        <button id="page-jump" type="button" class="page-jump" aria-label="Go to page"
+                title="Click to type a page number"><span id="page-status" aria-live="polite">Cover</span></button>
+        <input id="page-input" class="page-input" type="text" inputmode="numeric" autocomplete="off"
+               spellcheck="false" aria-label="Type a page number and press Enter" hidden>
+        <!-- 跳到指定页（Phase 26）：常驻入口，一眼看得见。 -->
+        <div class="jump-row">
+          <label class="jump-row-k" for="page-select">Go to</label>
+          <input id="page-select" class="page-select" type="text" inputmode="numeric"
+                 autocomplete="off" spellcheck="false" aria-label="Type a page number">
+          <button id="page-go" class="page-go" type="button">Go</button>
+        </div>
+      </div>
+      <div class="status-row auto-row">
+        <!-- 自动翻页开关（Phase 20）：默认关（aria-pressed="false"、文案=未播放态），
+             点了才开始自动翻。文本 / data-stop-* 是两套文案，由 flipbook.js 换用。
+             title 里的 {n} 由 flipbook.js 换成当前秒数 —— 调过速度之后
+             那句提示不能还停在 5。 -->
+        <button id="page-auto" type="button" class="page-auto" aria-pressed="false"
+                data-stop-label="Stop auto play" data-stop-title="Click to stop auto play"
+                title="Auto play: {n}s per page">Auto play</button>
+        <!-- 自动翻页调速（Phase 23 起 2~10 秒/页；Phase 26 补了最快的 1 秒档，
+             现在共 10 档，默认仍是 5 秒）。
+             少了它（老成品 HTML）就退回 5 秒，行为与 Phase 20 一致。 -->
+        <select id="page-auto-speed" class="page-auto-speed" aria-label="Auto play speed"
+                title="Seconds per page (1-10)">
+          <option value="1">1s</option>
+          <option value="2">2s</option>
+          <option value="3">3s</option>
+          <option value="4">4s</option>
+          <option value="5" selected>5s</option>
+          <option value="6">6s</option>
+          <option value="7">7s</option>
+          <option value="8">8s</option>
+          <option value="9">9s</option>
+          <option value="10">10s</option>
+        </select>
+        <small>Click page number to jump · Arrow keys flip</small>
+      </div>
+    </div>
+    <!-- Phase 28：到头之后再点它 = 整本翻回封面，所以它**不再**在末页变灰。 -->
+    <button id="next" type="button" aria-label="Next page">→</button>
+  </footer>
+</main>
+<script src="vendor/page-flip.browser.js"></script>
+<script src="flipbook.js"></script>
+</body>
+</html>

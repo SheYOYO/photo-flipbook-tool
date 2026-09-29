@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>画册工作台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark"></span>
+    <div>
+      <h1>画册工作台</h1>
+      <p id="brand-sub">选照片 · 排节奏 · 出书</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="chip" id="chip-photos">还没有照片</span>
+    <span class="chip" id="chip-pages">—</span>
+    <button class="btn btn-ghost" id="btn-shutdown" type="button" title="结束后台服务">关闭工具</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- 左栏：照片 -->
+  <section class="panel panel-photos">
+    <div class="panel-head">
+      <h2>照片</h2>
+      <p class="hint">拖动可换顺序</p>
+    </div>
+
+    <div class="picker" id="picker">
+      <p class="picker-empty" id="picker-empty">
+        还没有选照片文件夹。<br>
+        点下面的按钮开始。
+      </p>
+      <div class="picker-path" id="picker-path" hidden></div>
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <div class="panel-foot">
+      <button class="btn btn-primary btn-block" id="btn-pick" type="button">选择照片文件夹…</button>
+      <button class="btn btn-text" id="btn-auto" type="button" hidden>重新自动排版</button>
+    </div>
+  </section>
+
+  <!-- 中栏：跨页预览 -->
+  <section class="panel panel-preview">
+    <div class="panel-head">
+      <h2>跨页预览</h2>
+      <p class="hint" id="preview-hint">这是画册翻开的真实样子</p>
+    </div>
+
+    <div class="preview-scroll" id="preview-scroll">
+      <div class="preview-empty" id="preview-empty">
+        <div class="empty-book"></div>
+        <p>选好照片后，这里会显示每一页的排布</p>
+      </div>
+      <div class="spreads" id="spreads"></div>
+    </div>
+  </section>
+
+  <!-- 右栏：设置与生成 -->
+  <section class="panel panel-settings">
+    <div class="panel-head">
+      <h2>这本书</h2>
+      <p class="hint">书名与版式</p>
+    </div>
+
+    <div class="fields">
+      <label class="field">
+        <span class="field-label">书名</span>
+        <input type="text" id="input-title" placeholder="我的小狗" autocomplete="off">
+        <span class="field-hint is-dynamic" id="hint-title" hidden></span>
+      </label>
+      <label class="field">
+        <span class="field-label">副标题</span>
+        <input type="text" id="input-subtitle" placeholder="Photographs" autocomplete="off">
+        <span class="field-hint is-dynamic" id="hint-subtitle" hidden></span>
+      </label>
+      <label class="field">
+        <span class="field-label">输出到</span>
+        <div class="row">
+          <input type="text" id="input-output" autocomplete="off">
+          <button class="btn btn-mini" id="btn-pick-output" type="button">改</button>
+          <button class="btn btn-text btn-mini" id="btn-output-default" type="button" hidden>默认</button>
+        </div>
+        <span class="field-hint">默认放进工作区的「画册集」，做过的书都在那儿，可以反复翻看</span>
+      </label>
+
+      <!-- 封面文案样式（Phase 24 起；Phase 25 改成弹窗编辑器）
+           佘先生（2026-09-25）：「把封面文案样式那里改成点击唤起编辑封面的窗口，
+           窗口处要可以移动文字框，编辑文字的大小、字体、颜色，
+           然后点击确定后返回工具的主窗口」。
+           ⇒ 右栏只留**一个入口按钮**，真正的编辑器是下面那个模态窗口。
+           这样不调封面的人，右栏和以前一模一样（少占地方）。 -->
+      <div class="cover-entry" id="cover-entry" hidden>
+        <button class="btn btn-cover" id="cover-open" type="button">
+          <span class="cover-entry-t">封面文案样式</span>
+          <span class="cover-entry-h">点开编辑：拖文字框 · 字号 · 字体 · 颜色</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="selected-box" id="selected-box" hidden>
+      <div class="selected-head">
+        <span class="field-label">选中照片的版面</span>
+        <button class="btn btn-text btn-mini" id="btn-close-sel" type="button">取消选中</button>
+      </div>
+      <div class="plate-options" id="plate-options">
+        <button data-plate="small"    type="button">小</button>
+        <button data-plate="medium"   type="button">中</button>
+        <button data-plate="large"    type="button">大</button>
+        <button data-plate="portrait" type="button">竖</button>
+      </div>
+      <div class="pos-options" id="pos-options">
+        <button data-pos=""      type="button">居中</button>
+        <button data-pos="high"  type="button">上</button>
+        <button data-pos="low"   type="button">下</button>
+        <button data-pos="aside" type="button">偏右</button>
+      </div>
+    </div>
+
+    <div class="panel-foot">
+      <button class="btn btn-primary btn-block" id="btn-generate" type="button" disabled>生成画册</button>
+      <div class="progress" id="progress" hidden>
+        <div class="progress-bar"><i></i></div>
+        <span class="progress-text" id="progress-text">正在生成…</span>
+      </div>
+      <div class="after-gen" id="after-gen" hidden>
+        <button class="btn btn-primary btn-block" id="btn-open" type="button">打开画册</button>
+        <button class="btn btn-text btn-block" id="btn-reveal" type="button">打开所在文件夹</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- 封面文案编辑窗口（Phase 25）
+     佘先生：「点击唤起编辑封面的窗口 … 然后点击确定后返回工具的主窗口」。
+     ★ 左边是**服务端渲染的真封面**（同一个 page_html + 同一套 CSS），
+       可以直接拖文字框；右边是这一项的属性。
+     ★ 关掉时要清 iframe 的 src —— 不在编辑时不该白占一个预览文档。 -->
+<div class="modal modal-cover" id="cover-modal" hidden>
+  <div class="modal-card cover-card" role="dialog" aria-modal="true" aria-labelledby="cover-modal-title">
+    <div class="cover-card-head">
+      <h3 id="cover-modal-title">编辑封面文案</h3>
+      <p class="cover-card-sub">左边拖文字框挪位置、拖右下角的小方块改大小；右边调字号、字体、颜色。</p>
+      <button class="cover-x" id="cover-x" type="button" aria-label="关闭">×</button>
+    </div>
+
+    <div class="cover-card-body">
+      <div class="cover-stage">
+        <iframe id="cover-frame" title="封面预览"></iframe>
+      </div>
+
+      <div class="cover-side">
+        <!-- 文字框清单（Phase 26）：内置三项 + 用户自己加的那些。
+             ★ 由 app.js 按当前配置**重建** —— 这样才能"增添 / 删减选框"。
+               原来这里写死三个按钮，所以能调的只有那三个，加不了也删不掉。 -->
+        <div class="cover-tabs" id="cover-tabs" role="tablist"></div>
+        <div class="cover-actions">
+          <button class="btn btn-text btn-mini" id="cover-add" type="button">＋ 加文字框</button>
+          <button class="btn btn-text btn-mini" id="cover-del" type="button">删掉这个框</button>
+        </div>
+
+        <div class="cover-rows" id="cover-rows">
+          <!-- 「文字」只在选中**自己加的**文字框时出现：书名/副标题/页脚的内容
+               分别来自右边那栏的书名框、副标题框和照片张数，不该在这里改。 -->
+          <label class="cover-row" id="cv-text-row" hidden>
+            <span class="cover-row-k">文字</span>
+            <input type="text" id="cv-text" maxlength="80" autocomplete="off"
+                   spellcheck="false" placeholder="写点什么">
+          </label>
+          <label class="cover-row">
+            <span class="cover-row-k">左右</span>
+            <input type="range" id="cv-x" min="0" max="100" step="0.5">
+            <b class="cover-row-v" id="cv-x-v"></b>
+          </label>
+          <label class="cover-row">
+            <span class="cover-row-k" id="cv-y-k">距顶</span>
+            <input type="range" id="cv-y" min="0" max="100" step="0.5">
+            <b class="cover-row-v" id="cv-y-v"></b>
+          </label>
+          <!-- 宽度（Phase 26）：不调它就是"自动"（由左边距和右边距定），
+               调了就是定宽。拖预览里那个小方块，动的也是它。 -->
+          <label class="cover-row">
+            <span class="cover-row-k">宽度</span>
+            <input type="range" id="cv-w" min="5" max="100" step="0.5">
+            <b class="cover-row-v" id="cv-w-v"></b>
+          </label>
+          <label class="cover-row">
+            <span class="cover-row-k">字号</span>
+            <input type="range" id="cv-size" min="1" max="24" step="0.2">
+            <b class="cover-row-v" id="cv-size-v"></b>
+          </label>
+          <div class="cover-row">
+            <span class="cover-row-k">颜色</span>
+            <input type="color" id="cv-color">
+            <button class="btn btn-text btn-mini" id="cv-color-reset" type="button">默认色</button>
+          </div>
+          <label class="cover-row">
+            <span class="cover-row-k">字体</span>
+            <select id="cv-font">
+              <option value="serif">衬线（Source Serif）</option>
+              <option value="sans">无衬线</option>
+              <option value="hei">黑体</option>
+              <option value="song">宋体</option>
+              <option value="kai">楷体</option>
+              <option value="__import__">＋ 从电脑里选字体…</option>
+            </select>
+          </label>
+          <!-- 选了「＋ 从电脑里选字体…」就由它弹文件选择（Phase 30）。
+               藏起来是因为原生文件框长得实在难看，由下拉那一项代劳；
+               accept 只放行浏览器认得的四种字体格式。 -->
+          <input type="file" id="cv-font-file" hidden
+                 accept=".ttf,.otf,.woff,.woff2">
+          <div class="cover-row">
+            <span class="cover-row-k">对齐</span>
+            <div class="cover-seg" id="cv-align">
+              <button type="button" data-align="left">居左</button>
+              <button type="button" data-align="center">居中</button>
+              <button type="button" data-align="right">居右</button>
+            </div>
+            <label class="cover-chk"><input type="checkbox" id="cv-italic"> 斜体</label>
+          </div>
+        </div>
+
+        <div class="cover-foot-row">
+          <button class="btn btn-text btn-mini" id="cover-reset-el" type="button">这块恢复默认</button>
+          <button class="btn btn-text btn-mini" id="cover-reset-all" type="button">全部恢复默认</button>
+        </div>
+        <p class="field-hint" id="cover-hint">预览就是出书的真实样子。不调的项自动跟随默认，不必逐项去设。</p>
+      </div>
+    </div>
+
+    <div class="cover-card-foot">
+      <span class="cover-dirty" id="cover-dirty"></span>
+      <button class="btn btn-text" id="cover-cancel" type="button">取消</button>
+      <button class="btn btn-primary" id="cover-ok" type="button">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<div class="modal" id="modal" hidden>
+  <div class="modal-card">
+    <h3 id="modal-title">出错了</h3>
+    <p id="modal-body"></p>
+    <button class="btn btn-primary" id="modal-ok" type="button">知道了</button>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

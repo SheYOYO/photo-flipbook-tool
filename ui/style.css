@@ -1,0 +1,855 @@
+/* 画册工作台 —— 视觉延续画册本体的纸感：
+   米白纸底、暖灰墨色、Source Serif 4 衬线、纸纹与布纹。
+   字体与材质直接复用 runtime 里已有的资源，不引任何 CDN。 */
+
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/static/fonts/SourceSerif4-Regular.otf.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/static/fonts/SourceSerif4-It.otf.woff2") format("woff2");
+  font-weight: 400; font-style: italic; font-display: swap;
+}
+
+:root {
+  --paper: #f7f6f0;
+  --paper-dim: #efeee7;
+  --paper-card: #fdfcf8;
+  --ink: #292c26;
+  --ink-soft: #6e7365;
+  --ink-faint: #9aa093;
+  --line: #e2e1d8;
+  --line-strong: #d3d2c6;
+  --cloth: #7d8572;
+  --cloth-deep: #6b7362;
+  --accent: #7d8572;
+  --accent-ink: #f2efdf;
+  --danger: #a4553f;
+  --serif: "Source Serif 4", "Songti SC", "Noto Serif CJK SC", Georgia, serif;
+  --sans: "Segoe UI", "Microsoft YaHei", Arial, Helvetica, sans-serif;
+  --radius: 10px;
+  --shadow-sm: 0 1px 2px rgb(41 44 38 / 6%);
+  --shadow-md: 0 4px 14px rgb(41 44 38 / 9%);
+}
+
+* { box-sizing: border-box; }
+
+/* ★ 关键：hidden 属性必须真的隐藏。
+   HTML 里 hidden 只靠浏览器默认样式 display:none 生效，
+   本文件里任何作者写的 display（flex/grid/block）都会盖掉它，
+   结果就是「明明设了 hidden，元素还是显示出来」。
+   加一条带 !important 的兜底规则，所有用 hidden 控制的元素才真的会消失。 */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- 顶栏 */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 22px;
+  background: var(--paper-card);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.brand { display: flex; align-items: center; gap: 13px; }
+
+.brand-mark {
+  width: 30px; height: 38px;
+  border-radius: 3px 6px 6px 3px;
+  background: var(--cloth) url("/static/textures/cloth-weave.svg") repeat;
+  box-shadow: inset -3px 0 5px rgb(0 0 0 / 14%), var(--shadow-sm);
+  flex: none;
+}
+
+.brand h1 {
+  margin: 0;
+  font: 400 19px/1.2 var(--serif);
+  letter-spacing: -.01em;
+}
+
+.brand p {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.topbar-right { display: flex; align-items: center; gap: 9px; }
+
+.chip {
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--paper);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 三栏 */
+
+.layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(230px, 290px) 1fr minmax(250px, 300px);
+  gap: 1px;
+  background: var(--line);
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--paper);
+}
+
+.panel-head {
+  flex: none;
+  padding: 16px 18px 11px;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font: 400 15px/1.3 var(--serif);
+  letter-spacing: -.005em;
+}
+
+.hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.panel-foot {
+  flex: none;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------------------------------------------------------------- 按钮 */
+
+.btn {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 9px 14px;
+  background: var(--paper-card);
+  color: var(--ink);
+  font: 400 13px/1.2 var(--sans);
+  cursor: pointer;
+  transition: background .14s, border-color .14s, transform .06s;
+}
+.btn:hover:not(:disabled) { background: #fff; border-color: var(--ink-faint); }
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: .42; cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.btn-primary {
+  background: var(--cloth);
+  border-color: var(--cloth-deep);
+  color: var(--accent-ink);
+  font-weight: 400;
+  letter-spacing: .01em;
+}
+.btn-primary:hover:not(:disabled) { background: var(--cloth-deep); border-color: var(--cloth-deep); }
+
+.btn-ghost { background: transparent; }
+.btn-text {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-soft);
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.btn-text:hover:not(:disabled) { background: var(--paper-dim); border-color: transparent; color: var(--ink); }
+
+.btn-block { width: 100%; }
+.btn-mini { padding: 5px 9px; font-size: 12px; }
+
+/* ---------------------------------------------------------------- 左栏 */
+
+.picker {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px;
+}
+
+.picker-empty {
+  margin: 0;
+  padding: 34px 10px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.85;
+  color: var(--ink-faint);
+}
+
+.picker-path {
+  margin-bottom: 11px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper-card);
+  font-size: 11px;
+  color: var(--ink-soft);
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 9px;
+  padding-bottom: 6px;
+}
+
+.card {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--paper-card);
+  cursor: grab;
+  transition: border-color .14s, box-shadow .14s, opacity .14s;
+}
+.card:hover { border-color: var(--ink-faint); box-shadow: var(--shadow-sm); }
+.card.dragging { opacity: .34; cursor: grabbing; }
+.card.drop-target { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(125 133 114 / 26%); }
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(125 133 114 / 34%); }
+
+.card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  background: var(--paper-dim);
+  pointer-events: none;
+}
+
+.card .card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 7px;
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--line);
+}
+
+.card .card-idx {
+  flex: none;
+  min-width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--paper-dim);
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 17px;
+  text-align: center;
+}
+
+.card .card-plate {
+  flex: 1;
+  text-align: right;
+  color: var(--ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- 中栏 */
+
+.panel-preview { background: var(--paper-dim); }
+
+.preview-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 22px 26px;
+}
+
+.preview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  height: 100%;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+}
+
+.empty-book {
+  width: 130px; height: 168px;
+  border-radius: 3px 7px 7px 3px;
+  background: var(--paper-card) url("/static/textures/paper-grain.svg") repeat;
+  box-shadow: var(--shadow-md), inset -6px 0 10px rgb(41 44 38 / 7%);
+}
+
+.spreads { display: flex; flex-direction: column; gap: 20px; max-width: 720px; margin: 0 auto; }
+
+/* 一个跨页 = 左右两张纸，中间有书脊阴影 */
+.spread {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-radius: 4px;
+  background: var(--paper-card);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  aspect-ratio: 2 / 1.28;
+}
+
+.spread.single { max-width: 62%; margin: 0 auto; }
+
+.spread-label {
+  position: absolute;
+  top: -14px; left: 2px;
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  letter-spacing: .03em;
+}
+
+.page {
+  position: relative;
+  overflow: hidden;
+  background: var(--paper-card) url("/static/textures/paper-grain.svg") repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.page.cloth-page { background: var(--cloth) url("/static/textures/cloth-weave.svg") repeat; color: #f2efdf; }
+.page.endpaper-page { background: #e9e9dc; }
+/* 照片页：底色用深色，照片铺满后边缘看不出接缝 */
+.page.photo-page { background: #292c26; }
+
+/* 跨页过渡：淡淡的纸缝感。
+   与成品画册 book-style.css / styles.css 里的数值保持一致 ——
+   预览必须和成品长得一样，否则用户调完生成出来会不一样。
+   宽度 20%：和成品那条带子的占比一样。 */
+.page.spine-left::before,
+.page.spine-right::before {
+  position: absolute;
+  inset-block: 0;
+  z-index: 3;
+  width: 20%;
+  content: "";
+  pointer-events: none;
+}
+.page.spine-left::before { right: 0; background: linear-gradient(to left, rgb(30 32 26 / 26%) 0%, rgb(30 32 26 / 10%) 22%, rgb(30 32 26 / 3%) 50%, transparent 86%); }
+.page.spine-right::before { left: 0; background: linear-gradient(to right, rgb(30 32 26 / 26%) 0%, rgb(30 32 26 / 10%) 22%, rgb(30 32 26 / 3%) 50%, transparent 86%); }
+
+/* 纸缝：极细的半透明暗线，落在两张照片之间 */
+.page.photo-page.spine-left::after,
+.page.photo-page.spine-right::after {
+  position: absolute;
+  inset-block: 0;
+  z-index: 4;
+  width: 2px;
+  content: "";
+  pointer-events: none;
+}
+.page.photo-page.spine-left::after { right: 0; background: linear-gradient(to right, transparent, rgb(18 20 15 / 28%) 55%, rgb(18 20 15 / 40%)); }
+.page.photo-page.spine-right::after { left: 0; background: linear-gradient(to left, transparent, rgb(18 20 15 / 28%) 55%, rgb(18 20 15 / 40%)); }
+
+/* ---- 照片外侧边缘一圈「淡淡的黑色渐变阴影」 ----
+   只给不挨着另一页的那几条边：
+     verso（左页）→ 上 / 左 / 下；recto（右页）→ 上 / 右 / 下。
+   贴中线的那条边不给 —— 那里已经有跨页过渡带 + 2px 纸缝，再叠就重了。
+   强度和 book-style.css 完全一致：14% × opacity .72 ≈ 最深处 9%。 */
+.page.photo-page .outer-x,
+.page.photo-page .outer-y {
+  position: absolute;
+  z-index: 4;
+  pointer-events: none;
+  opacity: 0.72;
+}
+.page.photo-page .outer-y { inset-inline: 0; height: 7%; }
+.page.photo-page .outer-y.top { top: 0; background: linear-gradient(to bottom, rgb(0 0 0 / 14%), transparent); }
+.page.photo-page .outer-y.bottom { bottom: 0; background: linear-gradient(to top, rgb(0 0 0 / 14%), transparent); }
+.page.photo-page .outer-x { inset-block: 0; width: 6%; }
+.page.photo-page.verso .outer-x.left { left: 0; background: linear-gradient(to right, rgb(0 0 0 / 14%), transparent); }
+.page.photo-page.recto .outer-x.right { right: 0; background: linear-gradient(to left, rgb(0 0 0 / 14%), transparent); }
+
+/* ---- 照片页：整页出血，与成品一致 ----
+   .pl 现在就是页面本身，不再是一个居中的小框。
+   版面类名只改变裁切中心，不改变图片大小。 */
+.pl {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0;
+  overflow: hidden;
+  box-shadow: none;
+}
+.pl img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.pl.small    { --crop-y: 54%; }
+.pl.medium   { --crop-y: 46%; }
+.pl.large    { --crop-y: 42%; }
+.pl.portrait { --crop-y: 40%; }
+
+.pl.pos-center { --crop-x: 50%; --crop-y: 46%; }
+.pl.pos-high   { --crop-x: 50%; --crop-y: 34%; }
+.pl.pos-low    { --crop-x: 50%; --crop-y: 60%; }
+.pl.pos-aside  { --crop-x: 62%; --crop-y: 46%; }
+
+/* 裁切中心：小图偏下一点，大图/竖版偏上，和成品同源 */
+.pl img { object-position: var(--crop-x, 50%) var(--crop-y, 46%); }
+
+.page .folio {
+  position: absolute;
+  bottom: 5%;
+  font-size: 9px;
+  color: #8b8f83;
+}
+.page.recto .folio { right: 6%; }
+.page.verso .folio { left: 6%; }
+/* 压在照片上的页码用浅色，保证在任何画面上都读得清 */
+.page.photo-page .folio { color: rgb(255 255 255 / 62%); text-shadow: 0 1px 3px rgb(0 0 0 / 45%); z-index: 5; }
+
+.page .cover-t {
+  font: 400 17px/1.25 var(--serif);
+  margin: 0 0 7px;
+}
+.page .cover-s { font-size: 9.5px; margin: 0; opacity: .84; }
+.page .cover-wrap { position: absolute; left: 13%; right: 10%; top: 15%; }
+.page .cover-foot { position: absolute; left: 13%; bottom: 9%; font-size: 8.5px; letter-spacing: .12em; opacity: .8; }
+
+.page .tp { position: absolute; left: 16%; right: 12%; top: 26%; }
+.page .tp h3 { font: 400 15px/1.25 var(--serif); margin: 0 0 12px; }
+.page .tp p { font-size: 9.5px; margin: 0; color: var(--ink-soft); }
+
+.page .cp { position: absolute; left: 16%; right: 14%; top: 50%; font-size: 9.5px; line-height: 1.7; color: var(--ink-soft); }
+.page .cp p { margin: 0 0 7px; }
+
+.page .backmark { position: absolute; left: 13%; bottom: 11%; font: 400 12px/1.3 var(--serif); }
+
+/* 满版照片封面：文字改浅色 + 压一层暗化遮罩，浅色照片上标题也读得清。
+   与成品 book-style.css 的 cover-scrim 同源。 */
+.page.photo-page .cover-wrap,
+.page.photo-page .cover-foot { z-index: 2; color: #f7f6f0; }
+.page.photo-page .cover-t { text-shadow: 0 1px 12px rgb(0 0 0 / 55%), 0 1px 2px rgb(0 0 0 / 45%); }
+.page.photo-page .cover-s { color: #f7f6f0; text-shadow: 0 1px 12px rgb(0 0 0 / 55%); }
+.page.photo-page .cover-foot { text-shadow: 0 1px 12px rgb(0 0 0 / 55%); }
+.page .cover-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(to top, rgb(14 16 12 / 62%) 0%, rgb(14 16 12 / 22%) 34%, transparent 62%);
+}
+
+/* 拖动时画在中栏的指示 */
+.card.drop-target { border-color: var(--accent); }
+
+/* ---------------------------------------------------------------- 右栏 */
+
+.fields { padding: 0 16px; display: flex; flex-direction: column; gap: 13px; }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+
+.field-label {
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: .02em;
+}
+
+/* 输入框下面那行小字：写清楚这一栏的服务端兜底行为。
+   不写的话，用户会以为「我明明没填，为什么书里有东西」——
+   删空时的兜底提示、输出目录默认落在「画册集」，都用这一条。 */
+.field-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-faint);
+}
+/* 常驻说明（如「默认放进画册集」）不加小圆点前缀，免得像一条待办；
+   只有动态冒出来的兜底提示才加。 */
+.field-hint::before { content: ""; }
+.field-hint.is-dynamic::before { content: "· "; }
+
+.field input[type="text"] {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--paper-card);
+  color: var(--ink);
+  font: 400 13px/1.3 var(--sans);
+}
+.field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgb(125 133 114 / 16%); }
+
+.row { display: flex; gap: 7px; }
+.row input { flex: 1; min-width: 0; font-size: 11.5px !important; color: var(--ink-soft); }
+
+.selected-box {
+  margin: 15px 16px 0;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--paper-card);
+}
+
+.selected-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+
+.plate-options, .pos-options { display: grid; gap: 5px; }
+.plate-options { grid-template-columns: repeat(4, 1fr); margin-bottom: 6px; }
+.pos-options { grid-template-columns: repeat(4, 1fr); }
+
+.plate-options button, .pos-options button {
+  padding: 7px 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font: 400 12px/1 var(--sans);
+  cursor: pointer;
+  transition: background .13s, color .13s, border-color .13s;
+}
+.plate-options button:hover, .pos-options button:hover { border-color: var(--ink-faint); color: var(--ink); }
+.plate-options button.on, .pos-options button.on {
+  background: var(--cloth);
+  border-color: var(--cloth-deep);
+  color: var(--accent-ink);
+}
+
+.progress { display: flex; flex-direction: column; gap: 7px; }
+
+.progress-bar {
+  height: 4px;
+  border-radius: 3px;
+  background: var(--paper-dim);
+  overflow: hidden;
+}
+.progress-bar i {
+  display: block;
+  width: 34%;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  animation: slide 1.15s ease-in-out infinite;
+}
+@keyframes slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(390%); }
+}
+
+.progress-text { font-size: 11.5px; color: var(--ink-soft); text-align: center; }
+
+.after-gen { display: flex; flex-direction: column; gap: 7px; }
+
+/* ---------------------------------------------------------------- 提示 */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  border-radius: 22px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 12.5px;
+  box-shadow: var(--shadow-md);
+  z-index: 40;
+  animation: rise .18s ease-out;
+}
+@keyframes rise {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(41 44 38 / 32%);
+  z-index: 50;
+  padding: 24px;
+}
+
+.modal-card {
+  width: min(430px, 100%);
+  padding: 22px;
+  border-radius: 11px;
+  background: var(--paper-card);
+  box-shadow: 0 12px 34px rgb(41 44 38 / 20%);
+}
+
+.modal-card h3 { margin: 0 0 10px; font: 400 15px/1.3 var(--serif); }
+.modal-card p {
+  margin: 0 0 18px;
+  font-size: 12.5px;
+  line-height: 1.72;
+  color: var(--ink-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+/* --------------------------------- 封面文案样式（Phase 24 起；25 改成弹窗） */
+
+/* 右栏只留一个入口按钮；真正的编辑器是下面那个模态窗口。 */
+.cover-entry { display: block; }
+
+.btn-cover {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--paper-dim);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .13s, background .13s;
+}
+.btn-cover:hover { border-color: var(--ink-faint); background: var(--paper-card); }
+.cover-entry-t { font: 400 13px/1.2 var(--serif); }
+.cover-entry-h { font: 400 11px/1.2 var(--sans); color: var(--ink-faint); }
+
+.cover-card { width: min(940px, 100%); padding: 0; display: flex; flex-direction: column; }
+
+/* `.modal-card p` 是个 (0,1,1) 的选择器，会把 18px 下边距和滚动条套到窗口里所有
+   段落上。这里用 (0,2,0) 顶掉 —— 编辑窗口的段落不要那一套。 */
+.cover-card .cover-card-sub { margin: 5px 0 0; max-height: none; overflow: visible; white-space: normal; }
+.cover-card .field-hint { margin: 0; max-height: none; overflow: visible; }
+
+.cover-card-head {
+  position: relative;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.cover-card-head h3 { margin: 0; font: 400 15px/1.3 var(--serif); }
+.cover-card-sub { margin: 5px 0 0; font-size: 12px; color: var(--ink-soft); }
+.cover-x {
+  position: absolute;
+  top: 12px; right: 14px;
+  width: 26px; height: 26px;
+  border: 0; border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  font: 400 18px/1 var(--sans);
+  cursor: pointer;
+}
+.cover-x:hover { background: rgb(41 44 38 / 6%); color: var(--ink); }
+
+.cover-card-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 244px;
+  gap: 18px;
+  padding: 16px 20px;
+}
+
+.cover-stage {
+  width: 100%;
+  height: min(58vh, 460px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ecebe4;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.cover-stage iframe { display: block; width: 100%; height: 100%; border: 0; }
+
+.cover-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+/* ★ 页签是**动态数量**的（Phase 26：3 个内置 + 最多 8 个自己加的），
+   不能再写死三列。auto-fill + minmax(66px) 在 244px 的侧栏里正好还是三列
+   （66×3 + 两个 5px 间隙 = 208 < 244），与原来观感一致，多了就自动换行。 */
+.cover-tabs { display: grid; grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); gap: 5px; }
+.cover-tabs button {
+  padding: 6px 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font: 400 12px/1 var(--sans);
+  cursor: pointer;
+  transition: background .13s, color .13s, border-color .13s;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cover-tabs button:hover { border-color: var(--ink-faint); color: var(--ink); }
+.cover-tabs button.on {
+  background: var(--cloth);
+  border-color: var(--cloth-deep);
+  color: var(--accent-ink);
+}
+/* 被「删掉」的内置元素：页签仍然留着（点它就能改回来），但一眼看出它不在封面上 */
+.cover-tabs button.is-off { color: var(--ink-faint); text-decoration: line-through; }
+
+/* 加 / 删文字框（Phase 26） */
+.cover-actions { display: flex; gap: 6px; }
+.cover-actions .btn { flex: 1 1 auto; }
+.cover-actions .btn:disabled { opacity: .4; cursor: default; }
+
+.cover-rows { display: flex; flex-direction: column; gap: 7px; }
+
+.cover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+.cover-row-k {
+  flex: 0 0 34px;
+  font: 400 11.5px/1 var(--sans);
+  color: var(--ink-soft);
+}
+.cover-row input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 4px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.cover-row-v {
+  flex: 0 0 34px;
+  font: 400 11px/1 var(--sans);
+  color: var(--ink-faint);
+  text-align: right;
+  font-weight: 400;
+}
+
+.cover-row input[type="color"] {
+  flex: 0 0 40px;
+  height: 24px;
+  padding: 1px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--paper);
+  cursor: pointer;
+}
+.cover-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 12px/1.1 var(--sans);
+  cursor: pointer;
+}
+
+.cover-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; flex: 1 1 auto; }
+.cover-seg button {
+  padding: 6px 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink-soft);
+  font: 400 11.5px/1 var(--sans);
+  cursor: pointer;
+}
+.cover-seg button:hover { border-color: var(--ink-faint); color: var(--ink); }
+.cover-seg button.on {
+  background: var(--cloth);
+  border-color: var(--cloth-deep);
+  color: var(--accent-ink);
+}
+
+.cover-chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  font: 400 11.5px/1 var(--sans);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.cover-chk input { accent-color: var(--accent); cursor: pointer; }
+
+/* 文字内容输入框（Phase 26）：只在选中自己加的文字框时出现 */
+.cover-row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 12px/1.1 var(--sans);
+}
+.cover-row input[type="text"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.cover-foot-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.cover-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 13px 20px;
+  border-top: 1px solid var(--line);
+  background: var(--paper-dim);
+  border-radius: 0 0 11px 11px;
+}
+/* 左提示、右按钮：用 margin-right:auto 把提示顶到最左，按钮自动靠右 */
+.cover-dirty {
+  margin-right: auto;
+  font: 400 11.5px/1.3 var(--sans);
+  color: var(--ink-soft);
+}
+
+/* ---------------------------------------------------------------- 窄屏 */
+
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: 1fr; grid-template-rows: auto auto auto; overflow-y: auto; }
+  body { overflow: auto; }
+  .panel { min-height: 320px; }
+  .panel-preview { min-height: 460px; }
+}
+
+/* 窄屏 / 矮屏下的编辑窗口：预览与属性改上下排，别把属性栏挤没 */
+@media (max-width: 820px), (max-height: 620px) {
+  .cover-card-body { grid-template-columns: 1fr; }
+  .cover-stage { height: min(42vh, 340px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
