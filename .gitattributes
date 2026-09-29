@@ -1,0 +1,13 @@
+# 换行风格锁定：这几份文件的 CRLF 契约是产品的一部分
+# （翻页库重写 style、验收逐字节对账都依赖它），别让 git 自动转换。
+runtime/flipbook.js text eol=crlf
+runtime/styles.css text eol=crlf
+runtime/style/book-style.css text eol=crlf
+runtime/index.html text eol=crlf
+runtime/html-contract.test.mjs text eol=crlf
+
+# Windows 启动脚本本来就是 CRLF
+*.bat text eol=crlf
+
+# 其余按仓库默认（检出时按平台）
+* text=auto
