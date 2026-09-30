@@ -22,7 +22,7 @@
     POST /api/plan             改排版方案（调序 / 改 plate / 改书名 / 改封面文案样式）
     POST /api/auto-arrange     重新自动排版
     POST /api/generate         出书，返回成品路径
-    POST /api/open-output      在浏览器里打开成品
+    POST /api/open-output      无边框全屏打开成品（退不回则用默认浏览器）
     POST /api/shutdown         关掉服务
 
     GET  /preview/cover        封面文案的「所见即所得」预览页（只读）
@@ -1119,13 +1119,18 @@ class Handler(BaseHTTPRequestHandler):
     def handle_plan(self) -> None:
         """接收前端提交的排版改动。
 
-        只接受这几类改动：照片顺序、每张的 plate / position、书名、副标题、
-        输出位置、封面文案样式（coverText）。其他一律忽略，
+        只接受这几类改动：删照片、照片顺序、每张的 plate / position、书名、
+        副标题、输出位置、封面文案样式（coverText）。其他一律忽略，
         避免界面传上来的脏数据污染服务端状态。
 
         ★ `coverText` 走 `core.normalize_cover_text()` 洗白名单再存 ——
           界面能提交什么，和成品愿意接受什么，必须是同一套判据，
           否则会出现"预览好看、出书却按另一套值渲染"的偏差。
+
+        ★★ `remove` / `order` 都**不许动 `Photo.order`**（findings 112）。
+          `order` 是**身份号**，同时也是缩略图取图键（`GET /thumb?id=<order>`）；
+          一旦重编号，界面上已发出去的图全会串味。
+          所以删照片只从列表里摘掉，剩下的人**原地不动**。
         """
 
         payload = self.read_json()
@@ -1135,6 +1140,27 @@ class Handler(BaseHTTPRequestHandler):
         with SESSION.lock:
             if not SESSION.photos:
                 raise ValueError("还没有扫描照片，无法调整排版")
+
+            # 先删（再排），这样"一边删一边改顺序"也只算一次。
+            remove = payload.get("remove")
+            if remove is not None:
+                if not isinstance(remove, list):
+                    raise ValueError("要删的照片编号必须是数组")
+                try:
+                    drop = {int(x) for x in remove}
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("要删的照片编号里出现了非数字") from exc
+                known = {p.order for p in SESSION.photos}
+                unknown = drop - known
+                if unknown:
+                    raise ValueError(
+                        "要删的照片已经不在列表里了：" +
+                        "、".join(str(x) for x in sorted(unknown))
+                    )
+                if len(drop) >= len(SESSION.photos):
+                    raise ValueError("不能把照片全删光，至少留一张")
+                if drop:
+                    SESSION.photos = [p for p in SESSION.photos if p.order not in drop]
 
             order = payload.get("order")
             if order is not None:
@@ -1297,7 +1323,7 @@ class Handler(BaseHTTPRequestHandler):
             raise FileNotFoundError("还没有生成画册，先点「生成画册」")
         import ui_common
 
-        ui_common.open_in_browser(index)
+        ui_common.open_book_fullscreen(index)
         json_response(self, {"ok": True})
 
     def handle_reveal_output(self) -> None:

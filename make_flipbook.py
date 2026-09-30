@@ -1918,7 +1918,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if should_open_browser(args.no_open):
         try:
-            UI.open_in_browser(Path(out) / "index.html")
+            UI.open_book_fullscreen(Path(out) / "index.html")
         except Exception:
             pass
     return 0
