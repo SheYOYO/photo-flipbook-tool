@@ -20,7 +20,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PY = sys.executable
 TOOL = HERE / "make_flipbook.py"
-SRC = Path(r"C:\Users\Admin（无密码）\Desktop\3D画册2.0\图片")
+# 源照片目录：默认取「本机桌面 / 3D画册2.0 / 图片」。
+# ★ 用 Path.home() 拼、不写死用户名 —— 换机器只需改这一行，仓库里也不留本机账号痕迹。
+SRC = Path.home() / "Desktop" / "3D画册2.0" / "图片"
 
 results: list[tuple[str, str, str]] = []
 
@@ -1963,6 +1965,310 @@ def main() -> int:
         swept_ok = False
         summary = f"{type(_exc).__name__}: {_exc}"
     results.append(("成功L 浏览器残留清扫", "通过" if swept_ok else "失败", summary))
+
+    # --- 成功AB：删照片 / 按位次挪位 都不重编号（Phase 37）
+    #
+    #     佘先生（2026-09-29）：「左侧对扫描到的照片的操作需要有删除和排序功能……
+    #     每个图片的预览图的右上方要有一个叉号的组块…… 左下角的数字处做一个可以
+    #     点击输入数字的组块，输入数字后图片排序到相应位置」。
+    #
+    #     ★ 这一层守的是**服务端语义**：`Photo.order` 是身份号、同时还是
+    #       `/thumb?id=<order>` 的取图键（findings 113）⇒ 删除与挪位**都不许重编号**。
+    #       "界面上点得到、点得对"由 verify_ui.mjs 的「成功3b」那 14 条常驻断言定。
+    #
+    #     ★ 判据要**负向自证**（铁律 6）：不只是"删一张少一张"，
+    #       还要证明"被拒的请求一个脚印都没留下"、"剩下的人的编号一个都没动"。
+    ab_bad: list[str] = []
+    try:
+        import importlib.util as _ab_ilu  # noqa: PLC0415
+
+        _spec = _ab_ilu.spec_from_file_location("serve_ui_for_selftest", HERE / "serve_ui.py")
+        _su = _ilu.module_from_spec(_spec)
+        sys.modules["serve_ui_for_selftest"] = _su
+        _spec.loader.exec_module(_su)
+        _core = _load_engine()
+
+        # 造 6 张真照片（很小），直接塞进 SESSION，绕过扫描
+        ab_dir = tmp / "p37_photos"
+        ab_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(6):
+            from PIL import Image  # noqa: PLC0415
+            Image.new("RGB", (60, 80), (40 * i % 256, 90, 160)).save(
+                ab_dir / f"p37_{i:02d}.jpg", quality=70)
+        _photos = _core.scan(ab_dir)
+        _core.assign_plates(_photos)
+        with _su.SESSION.lock:
+            _su.SESSION.source_dir = ab_dir
+            _su.SESSION.photos = _photos
+            _su.SESSION.pages = _su.SESSION.pages_of()
+
+        class _FakeHandler(_su.Handler):
+            """不真的走 HTTP —— 直接喂 payload 进去、把回包截下来。"""
+
+            def __init__(self, payload):  # noqa: D107
+                self._payload = payload
+                self._sent = None
+
+            def read_json(self):  # noqa: D102
+                return self._payload
+
+        def _plan_call(payload):
+            h = _FakeHandler(payload)
+            _su.Handler.handle_plan(h)
+            return h._sent
+
+        # 拦掉 json_response，把它改成"记下回包"
+        _real_resp = _su.json_response
+
+        def _capture(handler, obj, *a, **k):
+            handler._sent = obj
+            return obj
+
+        _su.json_response = _capture
+        try:
+            orders0 = [p.order for p in _su.SESSION.photos]
+            n0 = len(orders0)
+            if n0 != 6:
+                ab_bad.append(f"素材不是 6 张（{n0}）")
+
+            # ① 负向：删不存在的编号、想全删光、remove 非数组、元素非数字 —— 全要拒
+            for bad_payload, why in (
+                ({"remove": [999999]}, "删不存在的编号"),
+                ({"remove": orders0}, "想全删光"),
+                ({"remove": "abc"}, "remove 不是数组"),
+                ({"remove": ["x"]}, "remove 里是非数字"),
+            ):
+                try:
+                    _plan_call(bad_payload)
+                    ab_bad.append(f"「{why}」竟然没被拒")
+                except (ValueError, TypeError):
+                    pass
+            # ② 负向自证：上面全被拒之后，照片一张没少、次序一个没动
+            if [p.order for p in _su.SESSION.photos] != orders0:
+                ab_bad.append("被拒的请求留下了脚印（次序变了）")
+
+            # ③ 正向：删掉第 3 张
+            victim = orders0[2]
+            _plan_call({"remove": [victim]})
+            got = [p.order for p in _su.SESSION.photos]
+            if got != [o for o in orders0 if o != victim]:
+                ab_bad.append(f"删完次序不对：{got} 期望 {[o for o in orders0 if o != victim]}")
+
+            # ④ ★ 挪位：把当前第 1 张挪到第 3 位（位次口径），编号集合必须一毫不变
+            cur = [p.order for p in _su.SESSION.photos]
+            expect = cur[:]
+            expect.insert(2, expect.pop(0))
+            _plan_call({"order": expect})
+            now = [p.order for p in _su.SESSION.photos]
+            if now != expect:
+                ab_bad.append(f"挪位次序不对：{now} 期望 {expect}")
+            if sorted(now) != sorted(cur):
+                ab_bad.append("挪位把照片编号集合改了（重编号了）")
+
+            # ⑤ 负向：order 长度对不上 / 塞未知编号 —— 拒，且状态不动
+            before = [p.order for p in _su.SESSION.photos]
+            for bad_payload, why in (
+                ({"order": before[:-1]}, "order 少一个"),
+                ({"order": before[:-1] + [999999]}, "order 里塞未知编号"),
+            ):
+                try:
+                    _plan_call(bad_payload)
+                    ab_bad.append(f"「{why}」竟然没被拒")
+                except (ValueError, TypeError):
+                    pass
+            if [p.order for p in _su.SESSION.photos] != before:
+                ab_bad.append("被拒的 order 请求留下了脚印")
+
+            # ⑥ 组合：一次请求里「先删再排」
+            drop = before[1]
+            rest = [o for o in before if o != drop]
+            neworder = rest[2:] + rest[:2]
+            _plan_call({"remove": [drop], "order": neworder})
+            final = [p.order for p in _su.SESSION.photos]
+            if final != neworder:
+                ab_bad.append(f"「先删后排」结果不对：{final} 期望 {neworder}")
+
+            # ⑦ ★★ /thumb 的取图键仍有效 —— 这是"没重编号"最硬的证据。
+            #    真照片文件还在，按原编号应该能取到图（不重编号 ⇒ 编号仍指向同一张）。
+            sample = final[len(final) // 2]
+            hit = [p for p in _su.SESSION.photos if p.order == sample]
+            if len(hit) != 1 or not hit[0].path.exists():
+                ab_bad.append(f"/thumb 取图键失效：order={sample} 找不到唯一照片")
+
+            summary_ab = (
+                f"删 {n0}→{len(got)} 张、挪位后编号集合不变、"
+                f"四处非法输入全被拒且零脚印、一次请求「先删后排」也对；"
+                f"负向自证全过（四种拒绝 + 两处零脚印）"
+            ) if not ab_bad else "；".join(ab_bad)
+        finally:
+            _su.json_response = _real_resp
+    except Exception as _exc:  # noqa: BLE001
+        summary_ab = f"{type(_exc).__name__}: {_exc}"
+        ab_bad = [summary_ab]
+    results.append((
+        "成功AB 删照片/挪位都不重编号（Phase 37）",
+        "通过" if not ab_bad else "失败",
+        summary_ab,
+    ))
+
+    # ------------------------------------------------------------------
+    # 成功AC 「打开画册」= 无边框全屏（Phase 40；Phase 42 起 URI 上不挂任何标记）
+    # ------------------------------------------------------------------
+    # 佘先生 2026-09-30：「我要的全屏是类似电脑游戏的全屏模式，屏幕上方不能有
+    # 浏览器显示」。做法：命令行 `--app=<uri>` 加 `--start-fullscreen`。
+    #
+    # ★ 这一题**一个浏览器都不启动**：把 _run_detached 换成记录器，只看
+    #   「该发什么命令」和「什么情况下该退回老办法」。
+    # ★ 负向自证：拿**故意错的**命令行喂给判据，它必须报错 —— 否则它只是碰巧
+    #   全绿，抓不住"其实开成了一个带标签页的普通窗口"这种坏法。
+    ac_bad: list[str] = []
+    try:
+        import importlib
+
+        _uc = importlib.import_module("ui_common")
+
+        fake_book = tmp / "fsbook" / "我的 小狗" / "index.html"
+        fake_book.parent.mkdir(parents=True, exist_ok=True)
+        fake_book.write_text("<html></html>", encoding="utf-8")
+
+        launched: list[list[str]] = []
+        fell_back: list[str] = []
+
+        _real_run = _uc._run_detached
+        _real_fallback = _uc.open_in_browser
+        _real_looks = _uc.looks_chromium
+        _real_exe = _uc.browser_exe_from_command
+
+        def _ab_check(cmd: list[str]) -> list[str]:
+            """判据本体：给一条命令行，挑毛病。"""
+            if len(cmd) < 3:
+                return [f"命令行太短：{cmd}"]
+            problems: list[str] = []
+            uri = str(cmd[1])
+            if not uri.startswith("--app=file:///"):
+                problems.append(f"第 2 个参数不是 --app=file:///：{uri}")
+            if "--start-fullscreen" not in cmd:
+                problems.append("少了 --start-fullscreen（会开成一个带标签页的普通窗口）")
+            if "--user-data-dir" in " ".join(str(c) for c in cmd):
+                problems.append("带了 --user-data-dir（会甩开用户自己的浏览器配置）")
+            if " " in uri:
+                problems.append(f"URI 没转义（空格会喂坏命令行）：{uri}")
+            # ★ Phase 42：URI 上**不许**再挂标记。Phase 41 挂过 `#fullscreen`，可它
+            #   会赖着不走（findings 126）⇒ 用户退出全屏后阅读器永远停在静读态、
+            #   控制条再也回不来。现在 reader 自己认 `(display-mode: fullscreen)`
+            #   （findings 123/124），命令行只要给一个干净的书页地址。
+            if "#" in uri:
+                problems.append(f"URI 带了 # 标记（退全屏后会赖着不走，findings 126）：{uri}")
+            if not uri.endswith("/index.html"):
+                problems.append(f"URI 指歪了：{uri}")
+            return problems
+
+        try:
+            _uc._run_detached = lambda cmd: launched.append(list(cmd))
+            _uc.open_in_browser = lambda t: fell_back.append(str(t)) or True
+            _uc.looks_chromium = lambda p: True
+            _uc.browser_exe_from_command = lambda c: Path("C:/fake/Chromium Browser.exe")
+
+            # ① 正向：认得出 Chromium 系 ⇒ 发无边框全屏命令，且不退
+            _uc.open_book_fullscreen(fake_book)
+            if len(launched) != 1:
+                ac_bad.append(f"该发 1 条命令，实际 {len(launched)} 条")
+            else:
+                ac_bad += _ab_check(launched[0])
+            if fell_back:
+                ac_bad.append("认得出 Chromium 却退回了普通打开")
+
+            good = list(launched[0]) if launched else []
+
+            # ② ★ 负向自证：判据必须挑得出毛病，逐条试（缺一个都不能放过）
+            if good:
+                if _ab_check(good):
+                    ac_bad.append(f"判据把对的也报错：{_ab_check(good)}")
+                for mutated, why in (
+                    ([c for c in good if c != "--start-fullscreen"], "缺 --start-fullscreen"),
+                    (["x", "file:///a/index.html", "--start-fullscreen"], "不是 --app="),
+                    (good + ["--user-data-dir=C:/tmp/x"], "多带 --user-data-dir"),
+                    (["x", "--app=file:///a/ 有空格.html", "--start-fullscreen"], "URI 没转义"),
+                    (["x", "--app=file:///a/other.html", "--start-fullscreen"], "URI 指歪"),
+                    ([c + "#fullscreen" if c.startswith("--app=") else c for c in good],
+                     "URI 又挂上了 #fullscreen 标记"),
+                ):
+                    if not _ab_check(mutated):
+                        ac_bad.append(f"判据抓不住「{why}」（假绿）")
+
+            # ③ 负向：不是 Chromium 系（比如 Firefox）⇒ 必须退回普通打开
+            launched.clear()
+            fell_back.clear()
+            _uc.looks_chromium = lambda p: False
+            _uc.open_book_fullscreen(fake_book)
+            if launched:
+                ac_bad.append("认不出 Chromium 还硬发 --app=（会开出一个带标签页的窗口）")
+            if len(fell_back) != 1:
+                ac_bad.append("认不出 Chromium 时没退回普通打开")
+
+            # ④ 负向：抠不出浏览器 exe ⇒ 也退回
+            launched.clear()
+            fell_back.clear()
+            _uc.looks_chromium = _real_looks
+            _uc.browser_exe_from_command = lambda c: None
+            _uc.open_book_fullscreen(fake_book)
+            if launched or len(fell_back) != 1:
+                ac_bad.append("抠不出浏览器 exe 时没退回普通打开")
+
+            # ⑤ 负向：放出去就失败 ⇒ 退回，且不许把异常丢给用户
+            launched.clear()
+            fell_back.clear()
+            _uc.browser_exe_from_command = lambda c: Path("C:/fake/Chromium Browser.exe")
+            _uc.looks_chromium = lambda p: True
+
+            def _boom(cmd):
+                raise OSError("模拟浏览器起不来")
+
+            _uc._run_detached = _boom
+            _uc.open_book_fullscreen(fake_book)
+            if len(fell_back) != 1:
+                ac_bad.append("启动失败时没退回普通打开（用户点了会毫无反应）")
+
+            # ⑥ 真抠命令行：复刻"路径带空格 + --single-argument %1"这种形态
+            #    ★ 自己造一个真实存在的 exe 再抠（抠取逻辑要求 exe 真的存在）——
+            #      原先拿本机装的浏览器当样本，换台没装它的机器这条就假红；
+            #      自造样本既与机器解耦，也不在仓库里留本机账号名。
+            probe_dir = Path(tempfile.mkdtemp(prefix="示例用户（本机）Tabbit Browser "))
+            try:
+                probe_exe = probe_dir / "Tabbit Browser.exe"
+                probe_exe.write_bytes(b"")
+                tabbit_cmd = f'"{probe_exe}" --single-argument %1'
+                got = _real_exe(tabbit_cmd)
+                if got is None or got.name != "Tabbit Browser.exe":
+                    ac_bad.append(f"从 shell 命令行里抠 exe 失败：{got}")
+            finally:
+                shutil.rmtree(probe_dir, ignore_errors=True)
+            if _real_exe("python.exe %1") is not None:
+                ac_bad.append("不带引号也硬抠（会切出半截路径）")
+
+            # ⑦ 真认亲：本机默认浏览器必须认得出（认不出就等于这条功能没生效）
+            real_exe_path = _real_exe(_uc._default_browser_command())
+            if real_exe_path is not None and not _real_looks(real_exe_path):
+                ac_bad.append(f"本机默认浏览器没认出来：{real_exe_path}")
+        finally:
+            _uc._run_detached = _real_run
+            _uc.open_in_browser = _real_fallback
+            _uc.looks_chromium = _real_looks
+            _uc.browser_exe_from_command = _real_exe
+
+        summary_ac = (
+            "认得出 Chromium 就发 --app=<干净的书页地址> + --start-fullscreen；"
+            "认不出／抠不到 exe／启动失败，三种情况都退回普通打开；"
+            "负向自证全过（6 种坏命令行全被抓出，含「又挂上 #fullscreen 标记」那条）"
+        ) if not ac_bad else "；".join(ac_bad)
+    except Exception as _exc:  # noqa: BLE001
+        summary_ac = f"{type(_exc).__name__}: {_exc}"
+        ac_bad = [summary_ac]
+    results.append((
+        "成功AC 「打开画册」走无边框全屏（Phase 40/42）",
+        "通过" if not ac_bad else "失败",
+        summary_ac,
+    ))
 
     # --- 跨页配对回归（核心不变量，见 check_spreads 的说明）
     check_spreads()

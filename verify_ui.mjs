@@ -10,6 +10,9 @@
  *   5 改单张图版式（先选中）→ 服务端 plate 变化
  *   6 点「生成画册」→ 真实产出 index.html
  *   7 界面代码（js/css）必须是 no-store，改完刷新就能看到
+ *   3b 左栏逐张管理：叉号删单张 · 序号点开填位次挪位置（Phase 37）
+ *      ★ 序号显示的是**当前位次**（1..N 连续），删除 / 换序 / 挪位后都刷新（Phase 38）
+ *   3c 全屏看预览：右下角进真全屏 / 右下角淡叉号退 / 三秒隐形但仍可点（Phase 38）
  * 失败路径：
  *   A 目录里没照片   B 目录不存在   C 损坏图片混入
  *   D 输出目录被文件占位   E 端口占用自动换端口
@@ -138,6 +141,397 @@ try {
     JSON.stringify(after) === JSON.stringify(expect),
     `第 1 张拖到第 3 位 → ${after.slice(0, 3).map((n) => n.slice(-8)).join(' → ')}`);
   await page.screenshot({ path: path.join(OUT, '03-after-drag.png'), fullPage: true });
+
+  // ---------- 3b 左栏逐张管理：叉号删 / 序号挪（Phase 37） ----------
+  //
+  // ★ 为什么这组判据要**永久留在这里**（不是一次性探针）：
+  //   叉号与序号组块长在每一张卡片上，任何一次 renderGrid() 的改动都可能
+  //   把它们碰掉 —— 而"碰掉"不会让别的断言变红（卡片数、图解码、拖拽都还正常）。
+  //   所以必须有一条守着"这两个组块真的在、真的能用"的常驻断言。
+  //
+  // ★★ 隔离纪律（本轮真踩过）：
+  //   这三段会**真的改服务端状态**（删照片、重排）。而第 3 步刚做过一次拖拽调序，
+  //   第 6 步的 `orderOk` 断言**依赖那次拖拽的结果**（"145929 排在 145907 前面"）。
+  //   所以收尾**绝不能**用 `/api/scan` 重扫 —— 那会把次序重新洗回扫描序，
+  //   第 6 步就会红成「顺序错误」，而红的地方离真正的原因隔了两百行。
+  //   正解：进来先把**(删之前的)完整图纸**拍下来，收尾时把次序和照片原样提交回去。
+  //
+  // ★ 位置口径用**数值坐实**（铁律 9）：叉号中心要落在图片矩形的右上四分之一内，
+  //   序号组块要落在图片下方那一行的左半边。光"元素存在"不算数。
+  const snapshot3b = (await api(page, '/api/plan')).data.plan.photos;
+  const p37 = await page.evaluate(() => {
+    const cs = [...document.querySelectorAll('#grid .card')];
+    const probe = (c) => {
+      const img = c.querySelector('img');
+      const idx = c.querySelector('.card-idx');
+      const del = c.querySelector('.card-del');
+      const meta = c.querySelector('.card-meta');
+      if (!img || !idx || !del || !meta) return null;
+      const ri = img.getBoundingClientRect();
+      const rd = del.getBoundingClientRect();
+      const rx = idx.getBoundingClientRect();
+      const rm = meta.getBoundingClientRect();
+      return {
+        order: Number(c.dataset.order),
+        idxText: idx.textContent.trim(),
+        delInTopRight: (rd.x + rd.width / 2) > ri.x + ri.width / 2
+          && (rd.y + rd.height / 2) < ri.y + ri.height / 2
+          && (rd.x + rd.width / 2) >= ri.x && (rd.y + rd.height / 2) >= ri.y,
+        idxInLeftBottom: Math.abs((rx.x + rx.width / 2) - (rm.x + rm.width * 0.25)) < rm.width * 0.4
+          && Math.abs((rx.y + rx.height / 2) - (rm.y + rm.height / 2)) < 3,
+      };
+    };
+    return { all: cs.length, probed: cs.map(probe).filter(Boolean) };
+  });
+  record('成功3b 每张卡片都有叉号 + 序号组块',
+    p37.probed.length === p37.all && p37.probed.length > 0,
+    `${p37.probed.length}/${p37.all} 张齐全`);
+  record('成功3b 叉号在图片右上角 / 序号在左下角（数值坐实）',
+    p37.probed.every((p) => p.delInTopRight && p.idxInLeftBottom),
+    `右上 ${p37.probed.filter((p) => p.delInTopRight).length}/${p37.probed.length}，` +
+    `左下 ${p37.probed.filter((p) => p.idxInLeftBottom).length}/${p37.probed.length}`);
+  record('成功3b 序号组块显示的是**当前位次**（1、2、3…连续）',
+    p37.probed.every((p, i) => p.idxText === String(i + 1)),
+    p37.probed.map((p) => p.idxText).join(','));
+
+  // ---- 序号组块：点一下就地变输入框，填位次回车即挪 ----
+  {
+    const beforeIdx = await page.evaluate(() =>
+      [...document.querySelectorAll('#grid .card')].map((c) => Number(c.dataset.order)));
+    const mover = beforeIdx[0];
+    const expectIdx = beforeIdx.slice();
+    expectIdx.splice(2, 0, expectIdx.splice(0, 1)[0]);   // 第 1 张 → 第 3 位
+
+    await page.locator('#grid .card').first().locator('.card-idx').click();
+    await page.waitForTimeout(160);
+    const hasInput = await page.evaluate(() => {
+      const i = document.querySelector('#grid .card .card-idx input');
+      return !!i && document.activeElement === i;
+    });
+    record('成功3b 点序号组块 → 就地出现输入框并拿到焦点', hasInput, '');
+
+    await page.locator('#grid .card .card-idx input').fill('3');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(900);
+
+    const gotIdx = await page.evaluate(() =>
+      [...document.querySelectorAll('#grid .card')].map((c) => Number(c.dataset.order)));
+    const srvIdx = (await api(page, '/api/plan')).data.plan.photos.map((p) => p.order);
+    record('成功3b ★ 填 3 → 照片挪到第 3 位，其余顺位让开',
+      JSON.stringify(gotIdx) === JSON.stringify(expectIdx)
+      && JSON.stringify(srvIdx) === JSON.stringify(gotIdx),
+      `${gotIdx.slice(0, 5).join(',')}…（原第 1 张=${mover} 现在第 3 位=${gotIdx[2]}）`);
+    // ★ 编号不重编号：集合必须一模一样，只有次序变了
+    record('成功3b ★ 挪位只是换次序，照片编号集合没变（不重编号）',
+      JSON.stringify([...gotIdx].sort((a, b) => a - b))
+      === JSON.stringify([...beforeIdx].sort((a, b) => a - b)), '');
+
+    // ★ 序号要**跟着位次刷新**（Phase 38）—— 挪完必须重排成 1..N，
+    //   而不是留着照片原来的身份号。这条是佘先生明确要求的那个「不更新」。
+    const idxAfterMove = await page.evaluate(() =>
+      [...document.querySelectorAll('#grid .card .card-idx')].map((e) => e.textContent.trim()));
+    record('成功3b ★ 挪位后序号刷新为当前位次（1..N 连续，不留旧号）',
+      JSON.stringify(idxAfterMove) === JSON.stringify(gotIdx.map((_, i) => String(i + 1))),
+      idxAfterMove.join(','));
+
+    // ---- 越界 / 非法 → 默默退回原位，不报错 ----
+    const guardBefore = gotIdx.slice();
+    for (const bad of ['9999', '0', 'abc']) {
+      await page.locator('#grid .card').first().locator('.card-idx').click();
+      await page.waitForTimeout(130);
+      await page.locator('#grid .card .card-idx input').fill(bad);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(450);
+    }
+    const guardAfter = await page.evaluate(() =>
+      [...document.querySelectorAll('#grid .card')].map((c) => Number(c.dataset.order)));
+    const modalUp = await page.evaluate(() => !document.getElementById('modal').hidden);
+    record('成功3b ★ 填越界/非法数 → 退回原位且不弹错（他明确选的"不理它"）',
+      JSON.stringify(guardAfter) === JSON.stringify(guardBefore) && !modalUp,
+      `次序未变=${JSON.stringify(guardAfter) === JSON.stringify(guardBefore)}，弹窗=${modalUp}`);
+  }
+
+  // ---- 叉号：删一张，其余编号保持不变 ----
+  {
+    const beforeDel = await page.evaluate(() =>
+      [...document.querySelectorAll('#grid .card')].map((c) => ({
+        order: Number(c.dataset.order), src: c.querySelector('img').getAttribute('src'),
+      })));
+    const victim = beforeDel[1];
+    const delBox = await page.evaluate(() => {
+      const d = document.querySelectorAll('#grid .card')[1].querySelector('.card-del');
+      const r = d.getBoundingClientRect();
+      return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+    });
+    await page.mouse.click(delBox.cx, delBox.cy);        // ★ 按实际位置点
+    await page.waitForTimeout(1000);
+
+    const afterDel = await page.evaluate(() =>
+      [...document.querySelectorAll('#grid .card')].map((c) => ({
+        order: Number(c.dataset.order), src: c.querySelector('img').getAttribute('src'),
+      })));
+    const srvDel = (await api(page, '/api/plan')).data.plan.photos;
+    record('成功3b ★ 点叉号 → 正好少掉那一张（按缩略图 src 认）',
+      afterDel.length === beforeDel.length - 1
+      && !afterDel.some((c) => c.src === victim.src)
+      && !srvDel.some((p) => p.order === victim.order),
+      `${beforeDel.length} → ${afterDel.length}，被删 order=${victim.order}`);
+    record('成功3b ★ 删完剩下照片的编号与相对次序都没变（不重编号）',
+      JSON.stringify(afterDel.map((c) => c.order))
+      === JSON.stringify(beforeDel.filter((c) => c.order !== victim.order).map((c) => c.order)),
+      '');
+
+    // ★ 删完也要重排成 1..N-1 —— 以前这里会缺号（1、2、4…），是他不要的做法。
+    const idxAfterDel = await page.evaluate(() =>
+      [...document.querySelectorAll('#grid .card .card-idx')].map((e) => e.textContent.trim()));
+    record('成功3b ★ 删一张后序号收敛成 1..N-1（不再缺号）',
+      JSON.stringify(idxAfterDel) === JSON.stringify(afterDel.map((_, i) => String(i + 1))),
+      idxAfterDel.join(','));
+    // ★ 缩略图取图键仍有效 —— 这是"没被重编号"最硬的证据
+    const thumbStill = await page.evaluate(async (o) => {
+      const r = await fetch(`/thumb?id=${o}`, { cache: 'no-store' });
+      return { s: r.status, n: (await r.blob()).size };
+    }, afterDel[0].order);
+    record('成功3b ★ 删/排之后 /thumb 仍按原编号取到图',
+      thumbStill.s === 200 && thumbStill.n > 1000,
+      `HTTP ${thumbStill.s} ${thumbStill.n}B`);
+
+    // ---- 反向自证：证明上面这些不是假绿 ----
+    // 人为拿掉一个叉号，确认"叉号数会真的少一个"——说明判据看得见红。
+    const neg = await page.evaluate(() => {
+      const n0 = document.querySelectorAll('#grid .card .card-del').length;
+      document.querySelector('#grid .card .card-del')?.remove();
+      return { n0, n1: document.querySelectorAll('#grid .card .card-del').length };
+    });
+    record('成功3b 负向自证：人为拿掉叉号后计数真的少 1（判据看得见红）',
+      neg.n1 === neg.n0 - 1, `${neg.n0} → ${neg.n1}`);
+    // 恢复：让前端重画一次网格（点一下序号组块再按 Esc 就会重画）——
+    // 这样不用动服务端状态，也不会污染后面的断言。
+    await page.locator('#grid .card').first().locator('.card-idx').click();
+    await page.waitForTimeout(150);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    const repaired = await page.evaluate(() => {
+      const cs = document.querySelectorAll('#grid .card').length;
+      const ds = document.querySelectorAll('#grid .card .card-del').length;
+      return { cs, ds };
+    });
+    record('成功3b 负向自证后界面恢复正常（每张卡片又都有叉号）',
+      repaired.cs > 0 && repaired.ds === repaired.cs, `${repaired.ds}/${repaired.cs}`);
+
+    // ---- 只剩一张时不许删光 ----
+    // 直接删到只剩第一张（服务端一次请求就能删多张，且会拒绝"全删光"）。
+    await page.evaluate(async () => {
+      const p = await (await fetch('/api/plan', { cache: 'no-store' })).json();
+      const orders = p.plan.photos.map((x) => x.order);
+      await fetch('/api/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remove: orders.slice(1) }),
+      });
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('#grid .card', { timeout: 20000 });
+    await page.waitForTimeout(600);
+    const oneLeft = await page.evaluate(() => document.querySelectorAll('#grid .card').length);
+    const delLast = await page.evaluate(() => {
+      const d = document.querySelector('#grid .card .card-del');
+      const r = d.getBoundingClientRect();
+      return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
+    });
+    await page.mouse.click(delLast.cx, delLast.cy);
+    await page.waitForTimeout(800);
+    const stillOne = await page.evaluate(() => document.querySelectorAll('#grid .card').length);
+    const guardMsg = await page.evaluate(() => {
+      const m = document.getElementById('modal');
+      return { hidden: m.hidden, text: (m.querySelector('#modal-body') || {}).textContent || '' };
+    });
+    record('成功3b ★ 只剩一张时点叉号 → 拦住并给人话提示',
+      oneLeft === 1 && stillOne === 1 && !guardMsg.hidden && /至少|留一张|删光/.test(guardMsg.text),
+      `点之前 ${oneLeft} 张、点之后 ${stillOne} 张；提示「${guardMsg.text.slice(0, 22)}」`);
+    await dismissModal();
+
+    // ---- 收尾还原 ----
+    // ★ 必须**重扫素材目录**（把被删掉的几张弄回来，因为 `/api/plan` 没有"加回来"的口子），
+    //   然后**再把次序提交回快照里的原样** —— 重扫会把次序洗成扫描序，
+    //   而第 6 步的 orderOk 依赖第 3 步拖拽后的次序。
+    const srcDir = (await api(page, '/api/plan')).data.plan.sourceDir;
+    await api(page, '/api/scan', { path: srcDir });
+    const restoreOrders = snapshot3b.map((p) => p.order);
+    await api(page, '/api/plan', { order: restoreOrders });
+    // 顺手把版式也恢复（第 5 步会把某张改成 small，但那是第 5 步之后的事，这里不动它）
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForSelector('#grid .card', { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const imgs = [...document.querySelectorAll('#grid .card img')];
+      return imgs.length > 0 && imgs.every((i) => i.complete && i.naturalWidth > 0);
+    }, { timeout: 25000 });
+    const after3b = (await api(page, '/api/plan')).data.plan.photos.map((p) => p.order);
+    record('成功3b 收尾：照片与次序都还原成跑这组判据之前的原样',
+      after3b.length === snapshot3b.length
+      && JSON.stringify(after3b) === JSON.stringify(restoreOrders),
+      `现 ${after3b.length} 张，次序 ${after3b.join(',')}（应为 ${restoreOrders.join(',')}）`);
+  }
+
+  // ---------- 3c 全屏看预览：右下角进、右下角淡叉号退（Phase 38） ----------
+  //
+  // 佘先生（2026-09-30）：「我想要电脑整个屏幕的全屏显示的功能，就是新增一个组块
+  //   在工具的右下角，主要不是在图片上，我点击进入真正的全屏，右下角再放一个叉号的
+  //   组件用于退出全屏，注意叉号的颜色要淡，不能抢眼，当没有操作三秒后时叉号不显示，
+  //   但在相应的位置仍有其功能，当我再次操作时比如光标移动和翻页时叉号显示」。
+  //   他选的那一项：进全屏后**只留中间那栏跨页预览**。
+  //
+  // ★ 这里量的是**浏览器真全屏**（Fullscreen API），不是"看起来铺满了" ——
+  //   fullscreenElement / :fullscreen / fs-mode 三个都要对上。实测无头 Chromium
+  //   支持真全屏，所以这条是真判据，没有打桩、没有假绿。
+  // ★ 「隐形但仍有功能」是本组最要紧的一条：光断言"看不见"会把
+  //   display:none 那种连点击一起没了的实现放过去 —— 所以必须**在隐形状态下
+  //   真点一下**，并确认它真退出了全屏。
+  // ⚠ 键盘 Esc 退全屏是**浏览器外壳的行为**，无头 Chromium 不响应（已取证：
+  //   按 Esc 前后 fullscreenElement 都是 true）。所以退出这条路量的是
+  //   **点叉号**（＝ exitFullscreen），不是 Esc。
+  {
+    const entryBox = await page.evaluate(() => {
+      const b = document.getElementById('btn-full');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      const col = b.closest('.panel-settings').getBoundingClientRect();
+      const foot = b.closest('.panel-foot').getBoundingClientRect();
+      return {
+        visible: !b.hidden && b.offsetParent !== null,
+        rightBottom: (r.x + r.width / 2) > col.x + col.width * 0.5
+          && (r.y + r.height / 2) > foot.y && r.right > col.right - 40,
+      };
+    });
+    record('成功3c 工具右下角有「全屏看预览」组块（位置数值坐实）',
+      !!(entryBox && entryBox.visible && entryBox.rightBottom), JSON.stringify(entryBox));
+
+    await page.locator('#btn-full').click();
+    await page.waitForTimeout(700);
+    const fsOn = await page.evaluate(() => {
+      const vis = (s) => {
+        const e = document.querySelector(s);
+        if (!e) return null;
+        const c = getComputedStyle(e);
+        return c.display !== 'none' && c.visibility !== 'hidden';
+      };
+      const pp = document.querySelector('.panel-preview').getBoundingClientRect();
+      const ex = document.getElementById('fs-exit');
+      const cs = getComputedStyle(ex);
+      const er = ex.getBoundingClientRect();
+      const m = /rgba?\(([^)]+)\)/.exec(cs.color);
+      const parts = m ? m[1].split(',') : [];
+      return {
+        real: !!document.fullscreenElement,
+        matches: document.documentElement.matches(':fullscreen'),
+        cls: document.documentElement.classList.contains('fs-mode'),
+        gone: !vis('.topbar') && !vis('.panel-photos') && !vis('.panel-settings'),
+        previewVisible: vis('.panel-preview'),
+        covers: Math.abs(pp.width - window.innerWidth) < 2
+          && Math.abs(pp.height - window.innerHeight) < 2,
+        spreadsW: document.querySelector('.spreads').getBoundingClientRect().width,
+        display: cs.display,
+        alpha: parts.length === 4 ? Number(parts[3]) : 1,
+        opacity: Number(cs.opacity),
+        rightGap: window.innerWidth - er.right,
+        bottomGap: window.innerHeight - er.bottom,
+        vw: window.innerWidth,
+        vh: window.innerHeight,
+      };
+    });
+    record('成功3c ★ 点它进的是浏览器真全屏（不是自己画个铺满的层）',
+      fsOn.real && fsOn.matches && fsOn.cls,
+      `fullscreenElement=${fsOn.real} :fullscreen=${fsOn.matches} fs-mode=${fsOn.cls}`);
+    record('成功3c ★ 全屏里只留中间那栏预览，并且铺满整屏',
+      fsOn.gone && fsOn.previewVisible && fsOn.covers,
+      `顶栏/左栏/右栏都收起=${fsOn.gone}；预览盖住视口(${fsOn.vw}x${fsOn.vh})=${fsOn.covers}；跨页宽 ${Math.round(fsOn.spreadsW)}px`);
+    record('成功3c 退出叉号在屏幕右下角、颜色淡（不抢眼）',
+      fsOn.display === 'flex' && fsOn.rightGap > 0 && fsOn.rightGap < 60
+      && fsOn.bottomGap > 0 && fsOn.bottomGap < 60 && fsOn.alpha <= 0.5,
+      `display=${fsOn.display} 距右/下 ${Math.round(fsOn.rightGap)}/${Math.round(fsOn.bottomGap)}px 颜色透明度=${fsOn.alpha}`);
+    await page.screenshot({ path: path.join(OUT, '03c-fullscreen.png') });
+
+    // ---- 三秒没操作 → 隐形；但位置与点击都还在 ----
+    await page.waitForTimeout(3600);
+    const idle = await page.evaluate(() => {
+      const e = document.getElementById('fs-exit');
+      const cs = getComputedStyle(e);
+      const r = e.getBoundingClientRect();
+      return {
+        idle: e.classList.contains('is-idle'), opacity: Number(cs.opacity),
+        display: cs.display, visibility: cs.visibility,
+        w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2,
+      };
+    });
+    record('成功3c ★ 三秒没操作 → 叉号隐形',
+      idle.idle && idle.opacity === 0, `is-idle=${idle.idle} opacity=${idle.opacity}`);
+    record('成功3c ★ 隐形是「变透明」不是「移除」（位置与尺寸都还在）',
+      idle.display === 'flex' && idle.visibility !== 'hidden' && idle.w > 0 && idle.h > 0,
+      `display=${idle.display} visibility=${idle.visibility} ${Math.round(idle.w)}x${Math.round(idle.h)}`);
+    await page.screenshot({ path: path.join(OUT, '03c-idle.png') });
+
+    // ★★ 隐形状态下真点一下 —— 这是「仍有其功能」唯一算数的证据。
+    await page.mouse.click(idle.cx, idle.cy);
+    await page.waitForTimeout(700);
+    const quit = await page.evaluate(() => ({
+      real: !!document.fullscreenElement,
+      cls: document.documentElement.classList.contains('fs-mode'),
+      topbar: getComputedStyle(document.querySelector('.topbar')).display,
+      exitDisplay: getComputedStyle(document.getElementById('fs-exit')).display,
+    }));
+    record('成功3c ★★ 隐形状态下点那块地方 → 仍退得出全屏（"相应位置仍有其功能"）',
+      !quit.real && !quit.cls && quit.topbar !== 'none' && quit.exitDisplay === 'none',
+      `fullscreenElement=${quit.real} fs-mode=${quit.cls} 顶栏=${quit.topbar} 叉号=${quit.exitDisplay}`);
+
+    // ---- 再进去：光标一动，叉号重新显形 ----
+    await page.locator('#btn-full').click();
+    await page.waitForTimeout(600);
+    await page.waitForTimeout(3600);
+    const idleAgain = await page.evaluate(() =>
+      document.getElementById('fs-exit').classList.contains('is-idle'));
+    await page.mouse.move(320, 320);
+    await page.waitForTimeout(800);   // 淡入 .5s，等它走完再量 —— 这里吃过一次"量到半路"的假红
+    const poked = await page.evaluate(() => {
+      const e = document.getElementById('fs-exit');
+      return { idle: e.classList.contains('is-idle'), opacity: Number(getComputedStyle(e).opacity) };
+    });
+    record('成功3c ★ 隐形后光标一动 → 叉号重新显形',
+      idleAgain && !poked.idle && poked.opacity === 1,
+      `动之前 idle=${idleAgain}；动之后 idle=${poked.idle} opacity=${poked.opacity}`);
+
+    // ---- 滚轮也算"在操作"（＝翻到下一组跨页）----
+    // ⚠ 这里**故意先不移动光标**：移动本身就会把叉号叫出来，那就测不出滚轮了。
+    await page.waitForTimeout(3600);
+    const wheelBefore = await page.evaluate(() => ({
+      idle: document.getElementById('fs-exit').classList.contains('is-idle'),
+      sc: document.querySelector('.preview-scroll').scrollTop,
+    }));
+    await page.mouse.wheel(0, 240);
+    await page.waitForTimeout(300);
+    const wheelAfter = await page.evaluate(() => ({
+      idle: document.getElementById('fs-exit').classList.contains('is-idle'),
+      sc: document.querySelector('.preview-scroll').scrollTop,
+    }));
+    record('成功3c ★ 隐形后滚一下（＝翻到下一组跨页）→ 叉号也显形',
+      wheelBefore.idle && !wheelAfter.idle && wheelAfter.sc > wheelBefore.sc,
+      `滚之前 idle=${wheelBefore.idle}；滚之后 idle=${wheelAfter.idle}；预览 ${Math.round(wheelBefore.sc)} → ${Math.round(wheelAfter.sc)}px`);
+
+    // ---- 收尾：退出来，界面必须收回原样（后面的步骤全依赖左右两栏可见）----
+    await page.evaluate(() => { if (document.fullscreenElement) document.exitFullscreen(); });
+    await page.waitForTimeout(700);
+    const closed = await page.evaluate(() => ({
+      real: !!document.fullscreenElement,
+      cls: document.documentElement.classList.contains('fs-mode'),
+      topbar: getComputedStyle(document.querySelector('.topbar')).display,
+      photos: getComputedStyle(document.querySelector('.panel-photos')).display,
+      exitDisplay: getComputedStyle(document.getElementById('fs-exit')).display,
+      idle: document.getElementById('fs-exit').classList.contains('is-idle'),
+    }));
+    record('成功3c 收尾：退出后界面收回原样，不给后面的步骤留状态',
+      !closed.real && !closed.cls && closed.topbar !== 'none' && closed.photos !== 'none'
+      && closed.exitDisplay === 'none' && !closed.idle,
+      `fs-mode=${closed.cls} 顶栏=${closed.topbar} 左栏=${closed.photos} 叉号=${closed.exitDisplay}`);
+  }
 
   // ---------- 4 改书名 ----------
   await page.fill('#input-title', '小虎的夏天');

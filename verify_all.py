@@ -130,7 +130,8 @@ def _pick_python() -> str:
 
 
 PY = _pick_python()
-NODE = Path(r"C:\Users\Admin（无密码）\.workbuddy\binaries\node\versions\22.22.2-3\node.exe")
+# 托管 Node 的位置（用 Path.home() 拼，不写死本机账号名）
+NODE = Path.home() / ".workbuddy" / "binaries" / "node" / "versions" / "22.22.2-3" / "node.exe"
 if not NODE.exists():                      # 回退到 PATH 里的 node
     NODE = Path("node")
 

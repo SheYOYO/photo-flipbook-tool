@@ -1760,6 +1760,31 @@ const lbDrift = lbA0 && lbA1
   : Number.NaN;
 const lbGrew = !!lbA0 && !!lbA1 && lbA1.s > lbA0.s * 1.2;
 
+// ★★ Phase 41 优化一：**左键按住拖 = 移动这张照片**（放大后拖到想看的地方）
+//   量法：按住左键把指针挪一段，照片左上角必须跟着挪，位移 ≈ 光标位移。
+//   ⚠ 松手时浏览器会补一个 click（拖到暗处松手 = "点暗处关闭"）⇒ 产品里用
+//     lightboxDragged 那一手把它吃掉；这里正要看它有没有吃掉（灯箱得还开着）。
+const lbDragFrom = { x: Math.round(lbRect.vw * 0.5), y: Math.round(lbRect.vh * 0.5) };
+const lbDragDX = 90;
+const lbDragDY = 55;
+const lbPosBefore = await page.evaluate(() => {
+  const st = window.__lightbox.state();
+  return st ? { x: st.x, y: st.y } : null;
+});
+await page.mouse.move(lbDragFrom.x, lbDragFrom.y);
+await page.mouse.down();
+await page.mouse.move(lbDragFrom.x + lbDragDX, lbDragFrom.y + lbDragDY, { steps: 10 });
+await page.mouse.up();
+await page.waitForTimeout(200);
+const lbPosAfter = await page.evaluate(() => {
+  const box = document.querySelector('.lightbox');
+  const st = window.__lightbox.state();
+  return st ? { x: st.x, y: st.y, open: !!(box && !box.hidden) } : null;
+});
+const lbMovedX = lbPosBefore && lbPosAfter ? lbPosAfter.x - lbPosBefore.x : Number.NaN;
+const lbMovedY = lbPosBefore && lbPosAfter ? lbPosAfter.y - lbPosBefore.y : Number.NaN;
+const lbStillOpen = !!lbPosAfter && lbPosAfter.open;
+
 // 叉号退出（单击），书要回到双击之前那一页
 await page.click('.lightbox__close');
 await page.waitForTimeout(400);
@@ -1776,12 +1801,19 @@ const lightboxClauses = {
       lbPageAfter === lbPageBefore,
   '★ 放大是**以光标那一点为中心**：光标底下那点钉住不动（漂移 ≤ 1px）':
       lbGrew && lbDrift <= 1,
+  // ---- ★★ Phase 41 优化一：左键按住拖 = 移动照片 ----
+  '★ 左键按住拖 ⇒ 照片跟着挪（X 位移 ≈ 光标位移，差 ≤ 2px）':
+      Math.abs(lbMovedX - lbDragDX) <= 2,
+  '★ 左键按住拖 ⇒ 照片跟着挪（Y 位移 ≈ 光标位移，差 ≤ 2px）':
+      Math.abs(lbMovedY - lbDragDY) <= 2,
+  '★ 拖完灯箱还开着（拖拽的余波没被误当成"点暗处关闭"）': lbStillOpen,
 };
 const lightboxBad = Object.keys(lightboxClauses).filter((k) => !lightboxClauses[k]);
 const lightboxOk = lightboxBad.length === 0;
 console.log('照片灯箱    :',
             `双击 ${lbTarget ? lbTarget.name : '?'} → ${lbOpen ? '开' : '没开'}`,
             `| 倍率 ${lbA0 ? lbA0.s.toFixed(2) : '?'}→${lbA1 ? lbA1.s.toFixed(2) : '?'}（漂移 ${lbDrift.toFixed(3)}px）`,
+            `| 拖 ${lbMovedX.toFixed(1)},${lbMovedY.toFixed(1)}px（期望 ${lbDragDX},${lbDragDY}）`,
             `| 叉号 → ${lbClosed ? '没关' : '关'}`,
             `| 页位 ${lbPageBefore}→${lbPageAfter}`,
             lightboxOk ? '（正常）' : `（⚠ 没过的子项：${lightboxBad.join('、')}）`);
@@ -1789,6 +1821,272 @@ console.log('照片灯箱    :',
 await page.evaluate(() => window.__pf.turnToPage(0));
 await page.waitForTimeout(700);
 
+// ---------------------------------------------------------------
+// ⑭ ★ Phase 39：控制条上多一颗「全屏」按钮（按一下进浏览器真全屏）
+// ---------------------------------------------------------------
+//
+// 佘先生 2026-09-30：「我想可以不可以真正的全屏，就是说浏览器没有标签页」
+//   —— 他选的是「按一下才进」（不是打开就无标签页），所以做成控制条第 2 行上一颗按钮。
+//
+// ⚠ 无头 Chromium **支持** requestFullscreen（fullscreenElement 有值、:fullscreen 命中），
+//   但 **Esc 退全屏不生效**（findings 117）⇒ 退全屏只量「再点一下那颗按钮」，
+//   另加一条 `document.exitFullscreen()`（真浏览器里按 Esc 走的就是它），
+//   不量 Esc 按键本身 —— 量了是假红，会误判成产品 bug。
+const fsBtn = await page.evaluate(() => {
+  const b = document.getElementById('page-full');
+  if (!b) return null;
+  const auto = document.getElementById('page-auto');
+  const rb = b.getBoundingClientRect();
+  const ab = auto ? auto.getBoundingClientRect() : null;
+  return {
+    label: b.textContent.trim(),
+    pressed: b.getAttribute('aria-pressed'),
+    tag: b.tagName,
+    type: b.type,
+    inAutoRow: !!b.closest('.auto-row'),
+    sameRowAsAuto: !!ab && Math.abs((rb.top + rb.height / 2) - (ab.top + ab.height / 2)) <= 3,
+    before: document.fullscreenElement ? document.fullscreenElement.tagName : null,
+  };
+});
+
+await page.click('#page-full');
+let fsEntered = true;
+try {
+  await page.waitForFunction(() => !!document.fullscreenElement, null, { timeout: 8000 });
+} catch (e) { fsEntered = false; }
+await page.waitForTimeout(400);
+const fsOn = await page.evaluate(() => {
+  const b = document.getElementById('page-full');
+  const c = document.querySelector('.controls');
+  return {
+    real: !!document.fullscreenElement,
+    el: document.fullscreenElement ? document.fullscreenElement.tagName : null,
+    isFullscreen: document.documentElement.matches(':fullscreen'),
+    label: b ? b.textContent.trim() : '',
+    pressed: b ? b.getAttribute('aria-pressed') : '',
+    // ★ Phase 41：进全屏后控制条**收起来**（他要的"下面不要显示 UI、四周无留白"）
+    controlsVisible: !!c && c.getBoundingClientRect().height > 1,
+  };
+});
+
+// ★★ Phase 41：真全屏 = 「干净看片」—— 量四周留白 / 控制条有没有收起来
+const fsClean = await page.evaluate(() => {
+  const de = document.documentElement;
+  const rig = document.querySelector('.book-rig');
+  const stage = document.querySelector('.stage');
+  const book = document.querySelector('.book');
+  const ctrl = document.querySelector('.controls');
+  return {
+    reading: de.classList.contains('fs-reading'),
+    net: de.classList.contains('fs-net'),
+    bar: de.classList.contains('fs-bar'),
+    clean: typeof window.__full.clean === 'function' ? window.__full.clean() : null,
+    displayFs: typeof window.__full.displayFs === 'function' ? window.__full.displayFs() : null,
+    netProbe: typeof window.__full.net === 'function' ? window.__full.net() : null,
+    hasToggle: typeof window.__full.hasBarToggle === 'function' ? window.__full.hasBarToggle() : null,
+    ctrlDisplay: ctrl ? getComputedStyle(ctrl).display : null,
+    stagePad: stage ? getComputedStyle(stage).paddingTop : null,
+    bookFilter: book ? getComputedStyle(book).filter : null,
+    rig: rig ? { w: rig.offsetWidth, h: rig.offsetHeight } : null,
+    vw: de.clientWidth, vh: de.clientHeight,
+  };
+});
+
+// 双击左键的位置：挑书页身上（① 判据里 pageAtPrevDown 靠 bookElement 的 pointerdown）
+const fsDblSpot = await page.evaluate(() => {
+  const b = document.querySelector('.book');
+  if (!b) return { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2), onBook: false };
+  const r = b.getBoundingClientRect();
+  const x = Math.round(r.left + r.width * 0.72);
+  const y = Math.round(r.top + r.height * 0.5);
+  const el = document.elementFromPoint(x, y);
+  return { x, y, onBook: !!(el && el.closest && el.closest('.book')) };
+});
+
+// 双击左键 ⇒ 控制条**浮**出来（这一下"叫 UI"的双击不该把书翻走）
+const fsPageBefore = await page.evaluate(() => window.__pf.getCurrentPageIndex());
+await page.mouse.dblclick(fsDblSpot.x, fsDblSpot.y);
+await page.waitForTimeout(1400);
+const fsBarOn = await page.evaluate(() => {
+  const de = document.documentElement;
+  const c = document.querySelector('.controls');
+  const page = window.__pf.getCurrentPageIndex();
+  if (!c) return { bar: de.classList.contains('fs-bar'), visible: false, page: page };
+  const cs = getComputedStyle(c);
+  const r = c.getBoundingClientRect();
+  return {
+    bar: de.classList.contains('fs-bar'),
+    probe: typeof window.__full.bar === 'function' ? window.__full.bar() : null,
+    display: cs.display,
+    position: cs.position,
+    visible: r.height > 1,
+    // 「浮在照片上」= 固定定位 + 贴着视口下沿（不占版面、压在照片上）
+    floatsOverImage: cs.position === 'fixed' && (de.clientHeight - r.bottom) < 80,
+    bottomGap: Math.round(de.clientHeight - r.bottom),
+    page: page,
+  };
+});
+
+// 再点一下同一颗按钮 ⇒ 退出
+await page.click('#page-full');
+try {
+  await page.waitForFunction(() => !document.fullscreenElement, null, { timeout: 8000 });
+} catch (e) { /* 下面用读数判 */ }
+await page.waitForTimeout(400);
+const fsOff = await page.evaluate(() => {
+  const b = document.getElementById('page-full');
+  const c = document.querySelector('.controls');
+  const rig = document.querySelector('.book-rig');
+  const de = document.documentElement;
+  return {
+    real: !!document.fullscreenElement,
+    label: b ? b.textContent.trim() : '',
+    pressed: b ? b.getAttribute('aria-pressed') : '',
+    reading: de.classList.contains('fs-reading'),
+    net: de.classList.contains('fs-net'),
+    bar: de.classList.contains('fs-bar'),
+    clean: typeof window.__full.clean === 'function' ? window.__full.clean() : null,
+    ctrlPos: c ? getComputedStyle(c).position : null,
+    ctrlDisplay: c ? getComputedStyle(c).display : null,
+    rig: rig ? { w: rig.offsetWidth, h: rig.offsetHeight } : null,
+    vh: de.clientHeight,
+  };
+});
+
+// 再进一次，这次用 exitFullscreen() 退（真浏览器里按 Esc 走的就是它）
+await page.click('#page-full');
+try {
+  await page.waitForFunction(() => !!document.fullscreenElement, null, { timeout: 8000 });
+} catch (e) { /* 下面用读数判 */ }
+await page.waitForTimeout(300);
+const fsBack = await page.evaluate(() => !!document.fullscreenElement);
+await page.evaluate(() => (document.fullscreenElement ? document.exitFullscreen() : null));
+try {
+  await page.waitForFunction(() => !document.fullscreenElement, null, { timeout: 8000 });
+} catch (e) { /* 下面用读数判 */ }
+await page.waitForTimeout(400);
+const fsExit = await page.evaluate(() => {
+  const b = document.getElementById('page-full');
+  const c = document.querySelector('.controls');
+  const rig = document.querySelector('.book-rig');
+  const de = document.documentElement;
+  return {
+    real: !!document.fullscreenElement,
+    label: b ? b.textContent.trim() : '',
+    reading: de.classList.contains('fs-reading'),
+    net: de.classList.contains('fs-net'),
+    clean: typeof window.__full.clean === 'function' ? window.__full.clean() : null,
+    ctrlDisplay: c ? getComputedStyle(c).display : null,
+    ctrlPos: c ? getComputedStyle(c).position : null,
+    rig: rig ? { w: rig.offsetWidth, h: rig.offsetHeight } : null,
+    vh: de.clientHeight,
+  };
+});
+
+// ★★ Phase 42：右下角那颗「收起条 / 显示条」开关 —— 只在普通窗口里量得到
+//    （此刻已经退出全屏，操作条在照片下方、书页还在 640px 上限里）
+const readBarBox = () => page.evaluate(() => {
+  const de = document.documentElement;
+  const rig = document.querySelector('.book-rig');
+  const ctrl = document.querySelector('.controls');
+  const btn = document.getElementById('bar-toggle');
+  const r = btn ? btn.getBoundingClientRect() : null;
+  return {
+    net: de.classList.contains('fs-net'),
+    reading: de.classList.contains('fs-reading'),
+    clean: typeof window.__full.clean === 'function' ? window.__full.clean() : null,
+    displayFs: typeof window.__full.displayFs === 'function' ? window.__full.displayFs() : null,
+    netProbe: typeof window.__full.net === 'function' ? window.__full.net() : null,
+    hasToggle: typeof window.__full.hasBarToggle === 'function' ? window.__full.hasBarToggle() : null,
+    ctrlDisplay: ctrl ? getComputedStyle(ctrl).display : null,
+    rig: rig ? { w: rig.offsetWidth, h: rig.offsetHeight } : null,
+    vw: de.clientWidth, vh: de.clientHeight,
+    label: btn ? btn.textContent.trim() : null,
+    pressed: btn ? btn.getAttribute('aria-pressed') : null,
+    btnVisible: !!r && r.height > 1 && r.width > 1,
+    btnInCorner: !!r && (de.clientWidth - r.right) < 40 && (de.clientHeight - r.bottom) < 90,
+  };
+});
+const barTogBefore = await readBarBox();
+await page.click('#bar-toggle');
+await page.waitForTimeout(600);
+const barTogOff = await readBarBox();
+await page.click('#bar-toggle');
+await page.waitForTimeout(600);
+const barTogOn = await readBarBox();
+
+const fullscreenClauses = {
+  '控制条第 2 行上多了一颗「全屏」按钮（加在控制条上、不是加在照片上）':
+      !!fsBtn && fsBtn.inAutoRow,
+  '它是真按钮，初始文案「全屏」且是未按下态':
+      !!fsBtn && fsBtn.tag === 'BUTTON' && fsBtn.type === 'button' &&
+      fsBtn.label === '全屏' && fsBtn.pressed === 'false',
+  '★ 它和「自动翻页」在同一行（中心线差 ≤ 3px）': !!fsBtn && fsBtn.sameRowAsAuto,
+  '★ 量之前本来不在全屏（否则下面的断言都不成立）': !!fsBtn && fsBtn.before === null,
+  '★ 点一下 ⇒ 真的进了浏览器全屏（fullscreenElement 有值、:fullscreen 命中）':
+      fsEntered && fsOn.real && fsOn.el === 'HTML' && fsOn.isFullscreen,
+  '★ 进全屏后按钮变「退出全屏」并呈按下态':
+      fsOn.label === '退出全屏' && fsOn.pressed === 'true',
+  // ---- ★★ Phase 41：真全屏 = 干净看片（四周无留白 + 收起操作条 + 双击唤回） ----
+  '★ 进全屏后「干净看片」状态挂上了（html.fs-reading）':
+      fsClean.reading && fsClean.clean === true,
+  '★ 控制条在真全屏里收起来了（他要的"下面不要显示 UI"）':
+      !fsOn.controlsVisible && fsClean.ctrlDisplay === 'none',
+  '★ 四周不留白：舞台 padding 归零、书页顶满视口（640px 高度上限已撤）':
+      fsClean.stagePad === '0px' && fsClean.bookFilter === 'none' &&
+      !!fsClean.rig && Math.abs(fsClean.rig.h - fsClean.vh) <= 4 &&
+      Math.abs(fsClean.rig.w - fsClean.vw) <= 4,
+  '★ 双击左键 ⇒ 控制条浮出来，而且浮在照片上（position:fixed + 贴视口下沿）':
+      !!fsBarOn && fsBarOn.bar && fsBarOn.probe === true && fsBarOn.visible &&
+      fsBarOn.floatsOverImage,
+  '★ 这一下"叫 UI"的双击没把书翻走（页位不动）': fsBarOn.page === fsPageBefore,
+  '★ 再点一下同一颗按钮 ⇒ 退出全屏，文案变回「全屏」':
+      !fsOff.real && fsOff.label === '全屏' && fsOff.pressed === 'false',
+  '★ 退出全屏后「净屏」整个撤掉、控制条回到照片**下方**（不再 fixed；findings 126）':
+      !fsOff.reading && !fsOff.net && !fsOff.bar && fsOff.clean === false &&
+      fsOff.ctrlDisplay !== 'none' && fsOff.ctrlPos !== 'fixed' &&
+      !!fsOff.rig && fsOff.rig.h <= 641,
+  '★ 退出全屏的另一条路（真浏览器里 Esc 就是它）也能退，且净屏一并撤干净':
+      fsBack && !fsExit.real && fsExit.label === '全屏' &&
+      !fsExit.reading && !fsExit.net && fsExit.clean === false &&
+      fsExit.ctrlDisplay !== 'none' && !!fsExit.rig && fsExit.rig.h <= 641,
+  // ---- ★★ Phase 42：净屏换 display-mode 判据 + 退出必须还原 + 右下角那颗开关 ----
+  '★ 进全屏时 display-mode 判据也认了（真机按 F11 那条路就靠它 —— findings 123/124）':
+      fsClean.displayFs === true,
+  '★ 进全屏后 UI 是「收着」的（html.fs-net：操作条整条不显示、画面顶满）':
+      fsClean.reading && fsClean.net === true && fsClean.netProbe === true,
+  '★ 右下角多了一颗开关，落在右下角、而且它自己永远不藏（藏了就再也叫不回来）':
+      barTogBefore.hasToggle === true && barTogBefore.btnVisible && barTogBefore.btnInCorner,
+  '★ 量开关之前确实是普通窗口（不在全屏、display-mode 也不认全屏）—— 否则下面都白量':
+      !barTogBefore.reading && barTogBefore.clean === false && barTogBefore.displayFs === false,
+  '★ 普通窗口里控制条本来就在照片**下方**（display 不是 none、书页还在 640px 上限内）':
+      barTogBefore.ctrlDisplay !== 'none' && !!barTogBefore.rig && barTogBefore.rig.h <= 641,
+  '★ 开关文案/按下态跟着真实状态走（正显示 ⇒「收起条」）':
+      barTogBefore.label === '收起条' && barTogBefore.pressed === 'true',
+  '★ 点一下 ⇒ 操作条收起、画面顶满（书页 == 视口）':
+      barTogOff.net && barTogOff.netProbe === true &&
+      barTogOff.ctrlDisplay === 'none' &&
+      !!barTogOff.rig && Math.abs(barTogOff.rig.h - barTogOff.vh) <= 4 &&
+      Math.abs(barTogOff.rig.w - barTogOff.vw) <= 4 &&
+      barTogOff.label === '显示条' && barTogOff.pressed === 'false',
+  '★ 再点一下 ⇒ 还原：操作条回到照片下方、书页回到上限内':
+      !barTogOn.net && barTogOn.netProbe === false &&
+      barTogOn.ctrlDisplay !== 'none' &&
+      !!barTogOn.rig && barTogOn.rig.h <= 641 &&
+      barTogOn.label === '收起条' && barTogOn.pressed === 'true',
+};
+const fullscreenBad = Object.keys(fullscreenClauses).filter((k) => !fullscreenClauses[k]);
+const fullscreenOk = fullscreenBad.length === 0;
+console.log('全屏按钮    :',
+            `按钮「${fsBtn ? fsBtn.label : '?'}」/ 在第 2 行 ${fsBtn && fsBtn.inAutoRow ? '是' : '否'}`,
+            `| 点一下 → ${fsOn.real ? `进了全屏（${fsOn.el} / :fullscreen=${fsOn.isFullscreen}）` : '没进'}`,
+            `| 文案 →「${fsOn.label}」`,
+            `| 净屏 ${fsClean.reading ? 'fs-reading' : '—'}/${fsClean.net ? 'fs-net' : '—'} display-mode=${fsClean.displayFs} 书页 ${fsClean.rig ? fsClean.rig.w + '×' + fsClean.rig.h : '?'} / 视口 ${fsClean.vw}×${fsClean.vh}`,
+            `| 右下角开关 ${barTogBefore.label}(${barTogBefore.rig ? barTogBefore.rig.w + '×' + barTogBefore.rig.h : '?'}) → ${barTogOff.label}(${barTogOff.rig ? barTogOff.rig.w + '×' + barTogOff.rig.h : '?'}) → ${barTogOn.label}(${barTogOn.rig ? barTogOn.rig.w + '×' + barTogOn.rig.h : '?'})`,
+            `| 双击唤回 ${fsBarOn && fsBarOn.bar ? '浮层已出' : '没出'}（${fsBarOn ? fsBarOn.position : '?'} / 离底 ${fsBarOn ? fsBarOn.bottomGap : '?'}px / 页位 ${fsPageBefore}→${fsBarOn ? fsBarOn.page : '?'}）`,
+            `| 再点 → ${fsOff.real ? '还在全屏' : '退出'}（「${fsOff.label}」）`,
+            `| exitFullscreen → ${fsExit.real ? '还在全屏' : '退出'}（「${fsExit.label}」）`,
+            fullscreenOk ? '（正常）' : `（⚠ 没过的子项：${fullscreenBad.join('、')}）`);
 // 断言：
 //   书页 12、硬纸恰好 2（首末）
 //   所有图都真的解码成功
@@ -1809,7 +2107,7 @@ const ok = info.leafCount === expected.page_count && info.hardCount === 2 &&
            info.seamBefore.pct >= 16 && info.seamBefore.pct <= 24 &&
            outerOk && flipOk && foldOk && dragOk && jumpOk && autoOk && speedOk &&
            jumpRowOk && overlapOk && backOk && compactOk && gestureOk && zoomOk &&
-           lightboxOk &&
+           lightboxOk && fullscreenOk &&
            errors.length === 0 && failed.length === 0 &&
            after !== info.pageStatus;
 console.log(ok ? '\n✅ 成品画册验收通过' : '\n❌ 成品画册有问题');
