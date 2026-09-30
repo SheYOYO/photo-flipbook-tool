@@ -34,8 +34,10 @@ import threading
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
+TESTS = Path(__file__).resolve().parent   # tests/（本脚本所在）
+HERE = TESTS.parent                       # 工具根（仓库根）
+ROOT = HERE.parent                        # 工作区（放 图片/ 与 画册集/）
+APP = HERE / "app"
 # ★ 验收对象所在的书架。默认就是用户那个「画册集」—— 契约层与成品层验的正是
 #   **他手上真实的成品**，这是这套门禁的意义所在。
 #
@@ -94,7 +96,7 @@ ALBUM_IS_SANDBOX = ALBUM == SANDBOX_GATE_ALBUM
 
 BOOK = _newest_in(ALBUM) or (ALBUM / "（还没做过画册）")
 
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(TESTS))
 from verify_common import snapshot_status_files, restore_status_files, sweep_browser_leftovers  # noqa: E402
 
 # 本机常驻 HTTP_PROXY/HTTPS_PROXY，回环请求会被送去代理直接失败。
@@ -117,7 +119,7 @@ def _pick_python() -> str:
     """
     try:
         import importlib.util
-        spec = importlib.util.spec_from_file_location("_run", HERE / "run.py")
+        spec = importlib.util.spec_from_file_location("_run", APP / "run.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)           # run.py 模块级无副作用
         found = mod.find_python()
@@ -190,7 +192,7 @@ def layer_selftest() -> None:
     log("\n" + "=" * 60)
     log("第二层：核心双向自测")
     log("=" * 60)
-    r = run([PY, "selftest.py"], cwd=HERE)
+    r = run([PY, "selftest.py"], cwd=TESTS)
     out = (r.stdout or "") + (r.stderr or "")
     log(out.strip()[-2600:])
     ok = r.returncode == 0 and "失败 0" in out
@@ -228,7 +230,7 @@ def layer_ui() -> None:
     #     长书顶掉、把成品层的验收对象偷偷换成一本 9 页小书（真踩过）。
     probe_album = HERE / ".verify-probe" / "ui-sandbox"
     server = subprocess.Popen(
-        [PY, "serve_ui.py", "--port", str(WORKBENCH_PORT), "--no-open",
+        [PY, str(APP / "serve_ui.py"), "--port", str(WORKBENCH_PORT), "--no-open",
          "--source", str(source), "--output", str(probe_album)],
         cwd=HERE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         env=dict(os.environ),
@@ -239,7 +241,7 @@ def layer_ui() -> None:
             log("工作台启动超时")
             return
         log(f"工作台已就绪 127.0.0.1:{WORKBENCH_PORT}")
-        r = run([NODE, "verify_ui.mjs", f"http://127.0.0.1:{WORKBENCH_PORT}"], cwd=HERE)
+        r = run([NODE, str(TESTS / "verify_ui.mjs"), f"http://127.0.0.1:{WORKBENCH_PORT}"], cwd=HERE)
         out = (r.stdout or "") + (r.stderr or "")
         log(out.strip()[-3200:])
         ok = r.returncode == 0
@@ -294,7 +296,7 @@ def layer_book() -> None:
     try:
         url = f"http://127.0.0.1:{BOOK_PORT}"
         log(f"成品服务已就绪 {url}")
-        r = run([NODE, "verify_book_ui.mjs", url], cwd=HERE)
+        r = run([NODE, str(TESTS / "verify_book_ui.mjs"), url], cwd=HERE)
         out = (r.stdout or "") + (r.stderr or "")
         log(out.strip()[-3200:])
         ok = r.returncode == 0 and "验收通过" in out

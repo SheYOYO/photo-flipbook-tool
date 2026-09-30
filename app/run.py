@@ -13,7 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+APP = Path(__file__).resolve().parent     # app/（本脚本所在）
+HERE = APP.parent                          # 工具根（仓库根）：runtime/ python/ 都在这儿
 
 # ★ 不要写死绝对路径。写死的话，工具换个用户名、换台机器就直接失效。
 # 这里按「随工具携带 → 常见安装位置 → PATH」的顺序动态找，
@@ -138,7 +139,7 @@ def main() -> int:
     print(f"使用解释器：{python}")
     print()
 
-    argv = [python, str(HERE / "make_flipbook.py"), *sys.argv[1:]]
+    argv = [python, str(APP / "make_flipbook.py"), *sys.argv[1:]]
     return subprocess.call(argv, cwd=str(HERE))
 
 

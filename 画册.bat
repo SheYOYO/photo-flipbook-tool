@@ -38,5 +38,5 @@ if not exist "%PYW%" set "PYW=%PYEXE%"
 rem serve_ui.py itself takes care of the "already running" case:
 rem if a workbench is up it just reopens the existing page instead
 rem of starting a second server.
-start "" /b "%PYW%" "%~dp0serve_ui.py" %*
+start "" /b "%PYW%" "%~dp0app\serve_ui.py" %*
 exit /b 0

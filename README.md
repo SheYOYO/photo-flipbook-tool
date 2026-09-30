@@ -149,7 +149,7 @@
 
 看哪本就直接进对应文件夹双击 `index.html`。整个文件夹是离线的，拷给别人也能看。
 
-> 这个位置只写在一个地方（`make_flipbook.py:default_output_dir()`），
+> 这个位置只写在一个地方（`app/make_flipbook.py:default_output_dir()`），
 > 出书和工作台「输出到」那一栏都取自它 —— 不会出现两处各说各话。
 > 工作台里临时改过目录后，那一栏旁边会出现「默认」按钮，一键回来。
 
@@ -165,7 +165,7 @@
 
 **方式二：改代码里的默认值**
 
-打开 `make_flipbook.py`，找到这两行改掉：
+打开 `app\make_flipbook.py`，找到这两行改掉：
 
 ```python
 DEFAULT_TITLE = "我的小狗"
@@ -199,9 +199,9 @@ DEFAULT_SUBTITLE = "Photographs"
 **单独维护画册目录**（一般用不着，出书时会自动更新）：
 
 ```bat
-python make_index.py                    # 扫画册集，重写 画册目录.md
-python make_index.py --print            # 只打印看看，不落盘
-python make_index.py --dir "D:\我的画册"  # 指定别的画册集
+python app/make_index.py                    # 扫画册集，重写 画册目录.md
+python app/make_index.py --print            # 只打印看看，不落盘
+python app/make_index.py --dir "D:\我的画册"  # 指定别的画册集
 ```
 
 ## 改排版
@@ -1254,7 +1254,7 @@ user-fonts\
 ### 一条命令跑完四层
 
 ```bat
-python verify_all.py
+python tests/verify_all.py
 ```
 
 | 层 | 脚本 | 验的是什么 | 期望 |
@@ -1268,7 +1268,7 @@ python verify_all.py
 ⚠ **别把「批量清理」和「跑验收」放在同一轮**：宿主的批量删除保护是**按轮次累计**的
 （阈值约 50 次）。一轮里先干了重删除的活，之后任何删除都会被拦，
 症状是**只有需要删除的那一层**（快捷入口）连续多轮全红 —— 那是环境假红，不是产品红。
-正式做法用 `python verify_stability.py --rounds 6`（连跑 6 轮看分布）。
+正式做法用 `python tests/verify_stability.py --rounds 6`（连跑 6 轮看分布）。
 
 ⚠ **契约层 / 成品层验的是「书架里 `generated_at` 最新的那本」**，默认书架就是工作区的
 `画册集/`。如果那里一本书都没有（清空过 / 新机器），会自动回落到沙箱替身书架
@@ -1278,37 +1278,37 @@ python verify_all.py
 合在一起的话，界面层每轮新出的那本短书时间戳最新，会**把验收对象顶掉**
 （症状是成品层时红时绿，红了你还以为是产品坏了）。
 
-只想跑某一层：`python verify_all.py --only 成品`（可选 `契约` / `核心` / `界面` / `成品`）。
+只想跑某一层：`python tests/verify_all.py --only 成品`（可选 `契约` / `核心` / `界面` / `成品`）。
 
 它会自己起好工作台和成品服务、跑完再收干净，不需要手动开服务。
 
 > **注意第一层必须在「成品目录」里跑** —— 它要找 `vendor/page-flip.browser.js`
-> 和 `assets/photos/`。`verify_all.py` 已经处理好了；手动跑才需要 `cd 画册`。
+> 和 `assets/photos/`。`verify_all.py` 已经处理好了；手动跑才需要 `cd ..\画册集\你的书名`。
 
 ### 分开手动跑
 
 ```bat
 rem 核心（要用带 Pillow 的解释器；报「缺少 Pillow」说明解释器挑错了）
-python selftest.py
+python tests/selftest.py
 
 rem 官方契约（必须在成品目录）
-cd 画册
+cd ..\画册集\你的书名
 node --test html-contract.test.mjs
 
 rem 工作台（先起服务，且必须 --source 预载照片，否则首屏是空列表、验收会超时）
-python serve_ui.py --port 8791 --no-open --source "C:\我的照片"
-node verify_ui.mjs http://127.0.0.1:8791
+python app/serve_ui.py --port 8791 --no-open --source "C:\我的照片"
+node tests/verify_ui.mjs http://127.0.0.1:8791
 
 rem 成品（第二个参数是 URL，不是本地路径）
-cd 画册
+cd ..\画册集\你的书名
 python -m http.server 8799 --bind 127.0.0.1
-node ..\verify_book_ui.mjs http://127.0.0.1:8799
+node ..\..\photo-flipbook-tool\tests\verify_book_ui.mjs http://127.0.0.1:8799
 ```
 
 ### 验快捷入口本身
 
 ```bat
-python verify_shortcut.py
+python tests/verify_shortcut.py
 ```
 
 `.bat` 在工具环境里跑不了（拿不到 cmd.exe），所以这个脚本**把
@@ -1351,7 +1351,7 @@ python verify_shortcut.py
 
 **2. 用 `pythonw.exe` 启动就不该留黑窗。**
 
-`start "" /b "%PYW%" serve_ui.py` 之后立刻 `exit /b 0`，控制台窗口随脚本一起消失。
+`start "" /b "%PYW%" app\serve_ui.py` 之后立刻 `exit /b 0`，控制台窗口随脚本一起消失。
 但 `pythonw.exe` 下 **`sys.stdout` 和 `sys.stderr` 都是 `None`**，
 任何 `print()` 都会抛 `AttributeError: 'NoneType' object has no attribute 'write'`
 把进程打崩（表现为双击完全没反应）。
@@ -1375,26 +1375,35 @@ python verify_shortcut.py
 
 ```
 photo-flipbook-tool\
-├── 画册.bat          双击入口（唯一）：打开工作台
+├── 画册.bat            双击入口（唯一）：打开工作台
 ├── _find_python.bat    共用：找一个带 Pillow 的 Python（被 画册.bat 调用）
-├── run.py              启动器：探测解释器后调 make_flipbook.py
-├── make_flipbook.py    核心：扫描、排版、出图、生成 HTML（含默认出书位置）
-├── make_index.py       给画册集写一份总目录（出书时自动调用）
-├── serve_ui.py         工作台的本地服务（只绑 127.0.0.1，不联网）
-├── ui_common.py        选文件夹、开浏览器、错误弹窗与日志
+├── README.md           本文件：用法 + 踩过的坑
+├── CHANGELOG.md        更新记录（每个版本一段）
+├── app\                主程序 —— 改功能就动这里
+│   ├── run.py              启动器：探测解释器后调 make_flipbook.py
+│   ├── make_flipbook.py    核心：扫描、排版、出图、生成 HTML（含默认出书位置）
+│   ├── make_index.py       给画册集写一份总目录（出书时自动调用）
+│   ├── serve_ui.py         工作台的本地服务（只绑 127.0.0.1，不联网）
+│   └── ui_common.py        选文件夹、开浏览器、错误弹窗与日志
 ├── ui\                 工作台界面（HTML/CSS/JS + 字体 + 材质）
-├── user-fonts\         用户导入的字体库（fonts\ + registry.json；用到才进书）
-├── selftest.py         核心的双向自测（40 项）
-├── verify_all.py       一把跑完四层验收（契约 / 核心 / 界面 / 成品）
-├── verify_common.py    验收共用：备份/还原「用户在用的」PID 与启动位置文件 + 扫浏览器残留
-├── verify_stability.py 五层连跑 N 轮给分布（识别宿主批量删除保护造成的环境假红）
-├── verify_ui.mjs       工作台的浏览器端到端验收（58 项）
-├── verify_book_ui.mjs  成品画册的浏览器验收
-├── verify_shortcut.py  验证快捷入口本身（26 项：含出书落点与中文目录名）
-├── .gitignore          探针与运行时残留不进版本库
 ├── runtime\            内置的翻页运行时（不放照片）
+├── tests\              验收 —— 改完先跑这里
+│   ├── selftest.py         核心的双向自测（44 项）
+│   ├── verify_all.py       一把跑完四层验收（契约 / 核心 / 界面 / 成品）
+│   ├── verify_common.py    验收共用：备份/还原「用户在用的」PID 与启动位置文件 + 扫浏览器残留
+│   ├── verify_stability.py 五层连跑 N 轮给分布（识别宿主批量删除保护造成的环境假红）
+│   ├── verify_ui.mjs       工作台的浏览器端到端验收（84 项）
+│   ├── verify_book_ui.mjs  成品画册的浏览器验收
+│   └── verify_shortcut.py  验证快捷入口本身（26 项：含出书落点与中文目录名）
+├── user-fonts\         用户导入的字体库（fonts\ + registry.json；用到才进书）
+├── .gitattributes      锁定关键文件的换行风格（CRLF 是产品契约的一部分）
+├── .gitignore          探针与运行时残留不进版本库
 └── logs\               出错时的日志 + 服务 PID
 ```
+
+> ★ **为什么分成 `app\` 和 `tests\`**：改功能只动 `app\`，跑验收只动 `tests\`，
+> 两边互不干扰，根目录只留双击入口和说明。脚本内部用「工具根」这个常量去定位
+> `runtime\` / `ui\` / `logs\`，所以以后**再挪目录也不会断**。
 
 > 交付物不在工具目录里 —— 做好的画册在**工作区的 `画册集\`**。
 > 早先工具目录里那份 `photo-flipbook-tool\画册\` 已废弃（那是历史遗留的旧位置），

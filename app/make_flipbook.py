@@ -35,6 +35,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+# ★ 本文件住在 app/ 里：_APP = 本文件所在目录，_TOOL = 工具根（仓库根）。
+_APP = Path(__file__).resolve().parent
+_TOOL = _APP.parent
+
 try:
     from PIL import Image, ImageOps
 except ImportError:  # pragma: no cover - 由启动器兜底提示
@@ -730,7 +734,7 @@ COVER_ALIGNS = ("left", "center", "right")
 #   **绝不让出书失败**（`load_user_fonts()` 不出异常是硬要求）。
 # --------------------------------------------------------------------------
 
-USER_FONTS_DIR = Path(__file__).resolve().parent / "user-fonts"
+USER_FONTS_DIR = _TOOL / "user-fonts"
 USER_FONT_FILES_DIR = USER_FONTS_DIR / "fonts"
 USER_FONT_REGISTRY = USER_FONTS_DIR / "registry.json"
 # 单个字体文件的上限：中文字体整包常见 3~20 MB，40 MB 足够宽松，
@@ -1397,10 +1401,10 @@ def default_output_dir() -> Path:
       画册集根上，和别的书混在一起 —— 这个坑真踩过。
     """
 
-    beside = Path(__file__).resolve().parent.parent / "画册集"
+    beside = _TOOL.parent / "画册集"
     if beside.parent.is_dir():
         return beside
-    return Path(__file__).resolve().parent / "画册"
+    return _TOOL / "画册"
 
 
 # 文件名里不能出现的字符（Windows 最严）：< > : " / \ | ? * 以及控制字符
@@ -1552,7 +1556,7 @@ def build_book_from(
     # 先查工具自身是否完整，再查运行环境。
     # 顺序很重要：工具被拷走时该报"缺运行时"，而不是怪罪 Python 环境。
     output_dir = Path(output_dir).expanduser().resolve()
-    runtime_dir = Path(runtime_dir or (Path(__file__).parent / "runtime")).resolve()
+    runtime_dir = Path(runtime_dir or (_TOOL / "runtime")).resolve()
 
     if not runtime_dir.is_dir():
         raise FileNotFoundError(

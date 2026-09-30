@@ -44,7 +44,8 @@ def setup_console() -> None:
 
 
 def log_dir() -> Path:
-    d = Path(__file__).parent / LOG_DIR_NAME
+    # ★ 本文件住在 app/ 里；logs/ 在工具根（仓库根）。
+    d = Path(__file__).parent.parent / LOG_DIR_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
 

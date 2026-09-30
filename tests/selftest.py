@@ -17,9 +17,16 @@ import tempfile
 import traceback
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+TESTS = Path(__file__).resolve().parent   # tests/（本脚本所在）
+HERE = TESTS.parent                       # 工具根（仓库根）
+APP = HERE / "app"                        # 主程序目录
+
+# ★ 让本文件能 import 到 app/ 与 tests/ 里的模块（原先靠 cwd 恰好在工具根）。
+for _p in (str(APP), str(TESTS)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 PY = sys.executable
-TOOL = HERE / "make_flipbook.py"
+TOOL = APP / "make_flipbook.py"
 # 源照片目录：默认取「本机桌面 / 3D画册2.0 / 图片」。
 # ★ 用 Path.home() 拼、不写死用户名 —— 换机器只需改这一行，仓库里也不留本机账号痕迹。
 SRC = Path.home() / "Desktop" / "3D画册2.0" / "图片"
@@ -607,7 +614,7 @@ def main() -> int:
         #     这里用**静态文本**守：把预览页自己那段 <style> 里的类名全抠出来，
         #     逐个到产品 CSS 里找同名选择器，找到就是红。
         #     不依赖浏览器、不依赖服务端状态，改坏了立刻红。
-        serve_src = (HERE / "serve_ui.py").read_text(encoding="utf-8")
+        serve_src = (APP / "serve_ui.py").read_text(encoding="utf-8")
         # 主窗口的脚本也要读：成功R 要拿它的 COVER_Y_LABEL 跟 CSS 对账。
         app_js = (HERE / "ui" / "app.js").read_text(encoding="utf-8")
         m_style = re.search(r"<style>\s*(.*?)</style>", serve_src, re.S)
@@ -848,7 +855,7 @@ def main() -> int:
         if not m_max or int(m_max.group(1)) != eng.COVER_EXTRA_MAX:
             s_bad.append("前后端「最多几个文字框」不一致")
         m_min_w_fe = re.search(r"COVER_MIN_W\s*=\s*([\d.]+)", app_js)
-        m_min_w_srv = re.search(r'"w":\s*\(([\d.]+),', (HERE / "make_flipbook.py").read_text(encoding="utf-8"))
+        m_min_w_srv = re.search(r'"w":\s*\(([\d.]+),', (APP / "make_flipbook.py").read_text(encoding="utf-8"))
         if (not m_min_w_fe or not m_min_w_srv
                 or float(m_min_w_fe.group(1)) != float(m_min_w_srv.group(1))):
             s_bad.append("前后端「文字框宽度下限」不一致")
@@ -1530,8 +1537,8 @@ def main() -> int:
         #     这一层守"这条链的每个环节都还在、且没被改成坏写法"；
         #     "浏览器里真的换了字形"由探针 `_p30_font.mjs` 量文字宽度来定。
         x_bad: list[str] = []
-        x_core = (HERE / "make_flipbook.py").read_text(encoding="utf-8")
-        x_ui = (HERE / "serve_ui.py").read_text(encoding="utf-8")
+        x_core = (APP / "make_flipbook.py").read_text(encoding="utf-8")
+        x_ui = (APP / "serve_ui.py").read_text(encoding="utf-8")
 
         def _x_ok(core_text: str, ui_text: str) -> bool:
             """外部字体整条链 + 封面变量的两个落点，少一样就算坏。"""
@@ -1784,7 +1791,7 @@ def main() -> int:
             y_js = (HERE / "runtime" / "flipbook.js").read_text(encoding="utf-8")
             y_css = (HERE / "runtime" / "styles.css").read_text(encoding="utf-8")
             y_bcss = (HERE / "runtime" / "style" / "book-style.css").read_text(encoding="utf-8")
-            y_tpl = (HERE / "make_flipbook.py").read_text(encoding="utf-8")
+            y_tpl = (APP / "make_flipbook.py").read_text(encoding="utf-8")
         except OSError as exc:                                   # noqa: BLE001
             y_bad.append(f"读不到源文件：{exc}")
             y_js = y_css = y_bcss = y_tpl = ""
@@ -1943,7 +1950,7 @@ def main() -> int:
         import importlib.util as _ilu
         import time as _time
 
-        _spec = _ilu.spec_from_file_location("verify_common_for_selftest", HERE / "verify_common.py")
+        _spec = _ilu.spec_from_file_location("verify_common_for_selftest", TESTS / "verify_common.py")
         _vc = _ilu.module_from_spec(_spec)
         sys.modules["verify_common_for_selftest"] = _vc
         _spec.loader.exec_module(_vc)
@@ -1982,7 +1989,7 @@ def main() -> int:
     try:
         import importlib.util as _ab_ilu  # noqa: PLC0415
 
-        _spec = _ab_ilu.spec_from_file_location("serve_ui_for_selftest", HERE / "serve_ui.py")
+        _spec = _ab_ilu.spec_from_file_location("serve_ui_for_selftest", APP / "serve_ui.py")
         _su = _ilu.module_from_spec(_spec)
         sys.modules["serve_ui_for_selftest"] = _su
         _spec.loader.exec_module(_su)

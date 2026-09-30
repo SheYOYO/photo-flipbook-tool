@@ -36,7 +36,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+TESTS = Path(__file__).resolve().parent
+HERE = TESTS.parent
 ROUND_LOGS = HERE / ".verify-probe" / "rounds"
 
 PY = sys.executable
@@ -68,7 +69,7 @@ LAYERS = ("契约", "核心", "界面", "成品", "快捷入口")
 
 
 def run(cmd: list[str]) -> tuple[int, str]:
-    r = subprocess.run(cmd, capture_output=True, env=ENV, cwd=str(HERE))
+    r = subprocess.run(cmd, capture_output=True, env=ENV, cwd=str(TESTS))
     out = (r.stdout or b"").decode("utf-8", "replace")
     out += (r.stderr or b"").decode("utf-8", "replace")
     return r.returncode, out

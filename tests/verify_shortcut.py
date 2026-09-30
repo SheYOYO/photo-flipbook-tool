@@ -34,7 +34,9 @@ import sys
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+TESTS = Path(__file__).resolve().parent   # tests/（本脚本所在）
+HERE = TESTS.parent                       # 工具根（仓库根）
+APP = HERE / "app"
 LOGS = HERE / "logs"
 PIDFILE = LOGS / ".serve_ui.pid"
 NOTEFILE = LOGS / "工作台启动位置.txt"
@@ -44,7 +46,8 @@ for _k in [k for k in os.environ if "PROXY" in k.upper()]:
 os.environ["NO_PROXY"] = "*"
 
 # 复用 run.py 那份候选表，保证「谁被挑中」这件事只有一个真相来源
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(TESTS))
+sys.path.insert(0, str(APP))          # run.py 现在住在 app/ 里
 import run as run_module  # noqa: E402
 from verify_common import snapshot_status_files, restore_status_files  # noqa: E402
 
@@ -168,7 +171,7 @@ def main() -> int:
          "m=importlib.util.module_from_spec(spec);sys.modules['_s']=m;"
          "spec.loader.exec_module(m);"
          "print(repr(m.find_running_workbench()))"],
-        cwd=HERE, capture_output=True, text=True, timeout=60,
+        cwd=APP, capture_output=True, text=True, timeout=60,
     )
     probe_secs = _t.time() - t0
     got_running = (probe3.stdout or "").strip()
@@ -189,7 +192,7 @@ def main() -> int:
          "spec=importlib.util.spec_from_file_location('_c','make_flipbook.py');"
          "m=importlib.util.module_from_spec(spec);sys.modules['_c']=m;"
          "spec.loader.exec_module(m);print(m.default_output_dir())"],
-        cwd=HERE, capture_output=True, text=True, timeout=60,
+        cwd=APP, capture_output=True, text=True, timeout=60,
     )
     got = (probe.stdout or "").strip()
     expected_pool = str((HERE.parent / "画册集").resolve())
@@ -198,7 +201,7 @@ def main() -> int:
           f"默认 {got or probe.stderr.strip()[:120]}")
 
     # 工作台里「输出到」那一栏的初值必须与它一致（两边各写一份必然不同步）
-    src = (HERE / "serve_ui.py").read_text(encoding="utf-8")
+    src = (APP / "serve_ui.py").read_text(encoding="utf-8")
     check("出书默认位置：工作台用同一个函数",
           "core.default_output_dir()" in src and 'HERE / "画册"' not in src,
           "serve_ui.py 里 output_dir 由 core.default_output_dir() 决定")
@@ -221,7 +224,7 @@ def main() -> int:
          "print(m.book_dir_name('a<b>c:d/e'));"
          "print(m.book_dir_in(a,'我的小狗'));"
          "print(m.book_dir_in(a,'')==Path(a).resolve())"],
-        cwd=HERE, capture_output=True, text=True, timeout=60,
+        cwd=APP, capture_output=True, text=True, timeout=60,
     )
     lines = [ln.strip() for ln in (probe2.stdout or "").splitlines() if ln.strip()]
     ok_cn = len(lines) >= 5 and lines[0] == "我的小狗"
@@ -244,7 +247,7 @@ def main() -> int:
           f"空书名算出的目录 == 画册集？{'是（危险）' if same_as_album else '否'}")
 
     # 出书主流程必须真的用了这个函数（不然上面测的只是摆设）
-    core_src = (HERE / "make_flipbook.py").read_text(encoding="utf-8")
+    core_src = (APP / "make_flipbook.py").read_text(encoding="utf-8")
     check("出书落点：CLI 出书时下了这一层",
           "book_dir_in(album, args.title)" in core_src,
           "make_flipbook.py 的 main() 用 book_dir_in() 算落点")
@@ -297,14 +300,14 @@ def main() -> int:
     check("起服务：找到一个空端口用于冷启动验收", cold_port is not None,
           f"选中 {cold_port}")
 
-    serv_args = [python, "serve_ui.py", "--no-open"]
+    serv_args = [python, str(APP / "serve_ui.py"), "--no-open"]
     if cold_port is not None:
         # --port 命中复用分支的例外，必然真的起一个独立实例
         serv_args += ["--port", str(cold_port)]
 
     proc = subprocess.Popen(
         serv_args,
-        cwd=HERE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=APP, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         env=dict(os.environ),
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )

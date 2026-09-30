@@ -52,14 +52,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-HERE = Path(__file__).resolve().parent
+APP = Path(__file__).resolve().parent    # app/：本脚本 + make_flipbook + ui_common 都在这儿
+HERE = APP.parent                        # 工具根（仓库根）：ui/ runtime/ logs/ 都在这儿
 
 # 本工作台的身份证。双击入口靠它在「已经跑着的服务」里认出自己人 ——
 # 只凭「端口有人应答」不够：任何程序都可能占着那个端口。
 APP_TAG = "photo-flipbook-workbench"
 
 # 让 make_flipbook 与 ui_common 能被 import
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(APP))
 
 import make_flipbook as core  # noqa: E402
 
