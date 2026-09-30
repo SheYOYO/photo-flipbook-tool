@@ -263,14 +263,47 @@ body {
 
 .card .card-idx {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 17px;
   height: 17px;
-  border-radius: 50%;
+  padding: 0 3px;
+  border-radius: 9px;
   background: var(--paper-dim);
   color: var(--ink-soft);
   font-size: 10px;
   line-height: 17px;
   text-align: center;
+  cursor: text;
+  transition: background .14s, color .14s, box-shadow .14s;
+}
+.card .card-idx:hover {
+  background: var(--accent);
+  color: var(--paper-card);
+  box-shadow: 0 0 0 2px rgb(125 133 114 / 22%);
+}
+
+/* 就地变输入框：撑开一点，够点够选，但不要顶动整格高度 */
+.card .card-idx.editing {
+  padding: 0;
+  background: var(--paper-card);
+  box-shadow: 0 0 0 1.5px var(--accent);
+}
+
+.card .card-idx-input {
+  width: 30px;
+  height: 17px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  line-height: 17px;
+  text-align: center;
+  outline: none;
 }
 
 .card .card-plate {
@@ -281,6 +314,36 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 右上角叉号：平时半透明淡淡地待着，鼠标进格或键盘聚焦才实起来 */
+.card-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(28 26 24 / 42%);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .5;
+  transition: opacity .14s, background .14s, transform .14s;
+}
+.card:hover .card-del,
+.card-del:focus-visible { opacity: 1; }
+.card-del:hover {
+  background: rgb(164 74 62 / 88%);
+  transform: scale(1.08);
+}
+.card-del:active { transform: scale(.94); }
 
 /* ---------------------------------------------------------------- 中栏 */
 
@@ -852,4 +915,74 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+}
+
+/* ============================================================ 全屏看预览（Phase 38） */
+
+/* 佘先生：「新增一个组块在工具的右下角，主要不是在图片上」。
+   放在右栏按钮区的最底下 = 工具本身的右下角，不压左边那些照片卡片。 */
+.fs-row { display: flex; justify-content: flex-end; }
+
+/* 进全屏之后**只留中间那栏跨页预览**（他选的那一项）。
+   ★ 用 html 上的 fs-mode 类来切，脚本在 fullscreenchange 里同步 ——
+     这样他自己按 Esc / F11 退出时也能一起收回来。 */
+html.fs-mode .topbar,
+html.fs-mode .panel-photos,
+html.fs-mode .panel-settings { display: none; }
+
+html.fs-mode .layout { display: block; }
+
+html.fs-mode .panel-preview {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* 全屏里不用再挂「跨页预览」这个标题了，画面让给画册 */
+html.fs-mode .panel-head { display: none; }
+
+html.fs-mode .preview-scroll { padding: 26px 26px 44px; }
+
+/* 一屏看一个大跨页 —— 原来那个 720px 是给三栏中间的窄条定的，全屏里太浪费 */
+html.fs-mode .spreads { max-width: min(1500px, 94vw); gap: 26px; }
+
+/* 右下角的退出叉号。
+   ★ 颜色必须**淡**（他明确要求「不能抢眼」）—— 所以是半透明的墨色画在半透明的
+     纸底上，而不是「实心圆 + 白叉」那种按钮脸。 */
+.fs-exit {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 90;
+  display: none;                 /* 不在全屏时压根不出现，也不占位 */
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid rgb(41 44 38 / 12%);
+  border-radius: 50%;
+  background: rgb(253 252 248 / 54%);
+  color: rgb(41 44 38 / 40%);
+  font: 400 18px/1 var(--sans);
+  cursor: pointer;
+  opacity: 1;
+  transition: opacity .5s ease, color .16s, background .16s, border-color .16s;
+}
+
+html.fs-mode .fs-exit { display: flex; }
+
+/* 三秒没操作 → 隐形。★ 只是透明，**没有** display:none / visibility:hidden ——
+   那块地方照样收点击，这就是他说的「在相应的位置仍有其功能」。 */
+.fs-exit.is-idle { opacity: 0; }
+
+/* 光标摸到它、或键盘 Tab 到它，一定看得见（不然没人找得到出口）。
+   ⚠ 这条必须写在 .is-idle 之后 —— 两者权重一样，靠先后定胜负。 */
+.fs-exit:hover,
+.fs-exit:focus-visible {
+  opacity: 1;
+  color: rgb(41 44 38 / 72%);
+  background: rgb(253 252 248 / 92%);
+  border-color: rgb(41 44 38 / 22%);
 }

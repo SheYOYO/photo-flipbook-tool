@@ -131,8 +131,17 @@
         <span class="progress-text" id="progress-text">正在生成…</span>
       </div>
       <div class="after-gen" id="after-gen" hidden>
-        <button class="btn btn-primary btn-block" id="btn-open" type="button">打开画册</button>
+        <button class="btn btn-primary btn-block" id="btn-open" type="button"
+                  title="无边框全屏打开：没有标签页、没有地址栏（退出全屏按 F11）">打开画册</button>
         <button class="btn btn-text btn-block" id="btn-reveal" type="button">打开所在文件夹</button>
+      </div>
+
+      <!-- 全屏看预览（Phase 38）：佘先生「新增一个组块在工具的右下角，
+           主要不是在图片上，我点击进入真正的全屏」。
+           ★ 放在右栏按钮区的最底下 = 工具本身的右下角，不压左边那些照片卡片。 -->
+      <div class="fs-row" id="fs-row" hidden>
+        <button class="btn btn-ghost fs-enter" id="btn-full" type="button"
+                title="全屏看中间的跨页预览">全屏看预览</button>
       </div>
     </div>
   </section>
@@ -244,6 +253,11 @@
     </div>
   </div>
 </div>
+
+<!-- 全屏时的退出叉号（Phase 38）：淡淡地待在右下角。
+     ★ 三秒没操作就隐形 —— 但**只是变透明**，位置和点击都留着
+       （用 opacity，不用 display / visibility，否则「仍有其功能」就不成立）。 -->
+<button class="fs-exit" id="fs-exit" type="button" aria-label="退出全屏" title="退出全屏">&times;</button>
 
 <div class="toast" id="toast" hidden></div>
 <div class="modal" id="modal" hidden>

@@ -143,6 +143,9 @@
     $('preview-empty').hidden = hasPhotos;
     if (hasPhotos) $('picker-path').textContent = plan.sourceDir;
 
+    // 没照片时进全屏只能看个空壳，所以跟「重新自动排版」一个待遇：有照片才给。
+    if ($('fs-row')) $('fs-row').hidden = !hasPhotos;
+
     renderCover();
   }
 
@@ -164,12 +167,35 @@
       img.loading = 'lazy';
       card.appendChild(img);
 
+      // 右上角叉号：删掉这一张。
+      // ★ 必须 stopPropagation —— 不然点叉号会顺带把这张"选中"，
+      //   删完选中态就挂在一个已经不存在的编号上了。
+      // ★ 还要拦 pointerdown/mousedown：卡片是 draggable 的，
+      //   手指按在叉号上往下拖会变成"拖整张卡片"，而不是"点叉号"。
+      // 「第几张」按**位次**说 —— 界面上的号现在就是位次，两处必须是同一套说法。
+      const pos = plan.photos.indexOf(photo) + 1;
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'card-del';
+      del.title = '删掉这张照片';
+      del.setAttribute('aria-label', `删掉第 ${pos} 张照片`);
+      del.textContent = '×';
+      for (const evName of ['pointerdown', 'mousedown', 'click', 'dblclick']) {
+        del.addEventListener(evName, (ev) => {
+          ev.stopPropagation();
+          if (evName === 'click') removePhoto(photo.order);
+        });
+      }
+      card.appendChild(del);
+
       const meta = document.createElement('div');
       meta.className = 'card-meta';
-      meta.innerHTML =
-        `<span class="card-idx">${photo.order}</span>` +
-        `<span class="card-plate">${plateLabel(photo.plate)}</span>`;
+      meta.innerHTML = `<span class="card-plate">${plateLabel(photo.plate)}</span>`;
       card.appendChild(meta);
+
+      // 左下角编号：显示**当前位次**（第几个），点一下就地变成输入框，
+      // 填个位次回车即挪过去。删除 / 换序后整格会重画，所以它永远是新的。
+      meta.insertBefore(makeIdxBox(photo), meta.firstChild);
 
       // 选中
       card.addEventListener('click', () => {
@@ -208,6 +234,82 @@
     }
   }
 
+  /** 左下角那个编号组块：不点时是个小圆片，点一下就地变成输入框。
+   *
+   * 「不动 DOM、只换控件」是刻意的 —— 重画整格会把这个输入框连焦点一起
+   * 冲掉，用户刚点开就没了。所以这里在组块内部换 span 与 input。
+   *
+   * ★ 显示的是**位次**（第几个，从 1 数起），不是 `Photo.order`。
+   *   佘先生（2026-09-30）：「那个图片的顺序数字显示不更新，要求我每次删除
+   *   图片和修改图片顺序都能刷新图片的真实顺序显示」。
+   *   ⇒ 以前显示身份号，删完会缺号（1、2、4…），他不要；现在显示真实位次，
+   *     删掉 / 换序 / 挪位之后一律重排成连续的 1、2、3…
+   *   ⚠ `Photo.order` 仍然**只做身份号与 /thumb 取图键**，一个字都不许动它
+   *     （重编号会让缩略图取错图，findings 112）。这里改的只是"显示哪张脸"。
+   *
+   * ★ 位次要**现算**，不能沿用建卡片那会儿的值 —— 卡片虽然是 renderGrid
+   *   重画的，但这个 paint() 会被 finish() 再叫一次，那时 plan 可能已经换了。
+   */
+  function makeIdxBox(photo) {
+    const box = document.createElement('span');
+    box.className = 'card-idx';
+
+    const posNow = () => {
+      const i = plan.photos.findIndex((p) => p.order === photo.order);
+      return i < 0 ? 0 : i + 1;
+    };
+
+    const paint = () => {
+      box.classList.remove('editing');
+      const pos = posNow();
+      box.textContent = pos > 0 ? String(pos) : '';
+      box.title = `第 ${pos} 张 · 点一下改成别的位置`;
+    };
+
+    const openEditor = () => {
+      if (box.classList.contains('editing')) return;
+      box.classList.add('editing');
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.inputMode = 'numeric';
+      input.className = 'card-idx-input';
+      input.value = String(posNow());
+      input.title = '填第几个，回车挪过去';
+      box.textContent = '';
+      box.appendChild(input);
+      input.focus();
+      input.select();
+
+      let done = false;
+      const finish = async (commit) => {
+        if (done) return;
+        done = true;
+        const want = Number.parseInt(input.value, 10);
+        paint();
+        if (!commit) return;
+        // 越界 / 非数字 → moveToPosition 自己会拒绝，这里直接退回原位（不报错）。
+        await moveToPosition(photo.order, want);
+      };
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      });
+      input.addEventListener('blur', () => finish(true));
+    };
+
+    paint();
+    for (const evName of ['pointerdown', 'mousedown', 'dblclick']) {
+      box.addEventListener(evName, (ev) => ev.stopPropagation());
+    }
+    box.addEventListener('click', (ev) => {
+      // 别顺带把这张选中；也别让卡片开始拖拽。
+      ev.stopPropagation();
+      ev.preventDefault();
+      openEditor();
+    });
+    return box;
+  }
+
   function renderSelected() {
     const box = $('selected-box');
     if (!plan || selectedOrder === null) {
@@ -220,7 +322,9 @@
       return;
     }
     box.hidden = false;
-    box.querySelector('.field-label').textContent = `第 ${photo.order} 张的版面`;
+    box.hidden = false;
+    const pos = plan.photos.indexOf(photo) + 1;
+    box.querySelector('.field-label').textContent = `第 ${pos} 张的版面`;
 
     document.querySelectorAll('#plate-options button').forEach((btn) => {
       btn.classList.toggle('on', btn.dataset.plate === photo.plate);
@@ -1026,6 +1130,57 @@
     }
   }
 
+  /** 把某张照片挪到「第 want 个」位置（want 从 1 数起，指人看到的位次）。
+   *
+   * ★ 位次 ≠ 照片编号（`Photo.order`）。编号是身份号、是缩略图的取图键，
+   *   从头到尾不变；重排只动列表次序。所以这里拿"目标位次"去查数组下标，
+   *   而不是拿编号去比大小 —— 否则编号一旦乱序（拖过序就会乱）就全错。
+   *
+   * ★ 越界 / 填了非数字：**什么都不做，默默退回原位**（他的明确选择）。
+   *   不弹窗、不提示 —— 敲错了不该被弹一脸。
+   */
+  async function moveToPosition(orderNo, want) {
+    if (!plan) return false;
+    const n = plan.photos.length;
+    if (!Number.isInteger(want) || want < 1 || want > n) return false;
+    const orders = plan.photos.map((p) => p.order);
+    const fromIdx = orders.indexOf(orderNo);
+    if (fromIdx < 0 || fromIdx === want - 1) return false;
+    orders.splice(want - 1, 0, orders.splice(fromIdx, 1)[0]);
+    try {
+      await applyPlan(await post('/api/plan', { order: orders }));
+      toast(`已挪到第 ${want} 张`);
+      return true;
+    } catch (err) {
+      showError(err.message);
+      return false;
+    }
+  }
+
+  /** 删掉一张照片。
+   *
+   * ★ `Photo.order` **不重编号**（findings 112）—— 它是身份号兼缩略图取图键，
+   *   重编号会让界面上的图与数据对不上。界面上左下角显示的是**位次**，
+   *   由 renderGrid 重画后自动收敛成连续的 1、2、3…（Phase 38）。
+   */
+  async function removePhoto(orderNo) {
+    if (!plan) return;
+    if (plan.photos.length <= 1) {
+      showError('至少要留一张照片，不能把照片全删光。');
+      return;
+    }
+    try {
+      await applyPlan(await post('/api/plan', { remove: [orderNo] }));
+      // 选中的那张被删了，选中态要跟着清掉。
+      if (selectedOrder === orderNo) selectedOrder = null;
+      toast('已删掉一张');
+      renderGrid();
+      renderSelected();
+    } catch (err) {
+      showError(err.message);
+    }
+  }
+
   async function editPlate(plate) {
     if (selectedOrder === null) return;
     try {
@@ -1109,10 +1264,80 @@
 
   // ---------------------------------------------------------------- 绑定
 
+  // ------------------------------------------------- 全屏看预览（Phase 38）
+  //
+  // 佘先生（2026-09-30）：「我想要电脑整个屏幕的全屏显示的功能，就是新增一个组块
+  //   在工具的右下角，主要不是在图片上，我点击进入真正的全屏，右下角再放一个叉号的
+  //   组件用于退出全屏，注意叉号的颜色要淡，不能抢眼，当没有操作三秒后时叉号不显示，
+  //   但在相应的位置仍有其功能，当我再次操作时比如光标移动和翻页时叉号显示」。
+  //   他选的那一项：进全屏后**只留中间那栏跨页预览**。
+  //
+  // ★ 四件必须守住的：
+  //   1. 用**浏览器真全屏**（Fullscreen API），不是自己拿一个铺满的层冒充 ——
+  //      「真正的全屏」= 浏览器边框、地址栏都让出去。实测无头 Chromium 也支持
+  //      （fullscreenElement 有值、:fullscreen 命中），所以验收里这条是真判据，
+  //      没有打桩、没有假绿。
+  //   2. 「只留预览」靠 html 上的 fs-mode 类切，进 / 退全屏都在 fullscreenchange
+  //      里同步。★ 光靠 :fullscreen 伪类不够 —— 用户按 Esc / F11 自己退出时，
+  //      类是我们自己说了算的那一份，必须收敛。
+  //   3. 叉号"隐形"**只能用 opacity**。换成 display:none / visibility:hidden
+  //      会把点击一起取消，就不满足他要求的「在相应的位置仍有其功能」。
+  //   4. 任何动静都算"在操作"：光标移动、滚轮、键盘、点击、滚动。
+  //      监听挂 **capture 阶段** —— scroll 不冒泡，挂冒泡阶段收不到内层滚动。
+
+  const FS_IDLE_MS = 3000;
+  let fsIdleTimer = 0;
+
+  /** 三秒没操作就把叉号隐掉（只是变透明，位置与点击都留着）。 */
+  function fsPoke() {
+    if (!document.fullscreenElement) return;   // 不在全屏就别白跑计时器
+    const el = $('fs-exit');
+    if (!el) return;
+    el.classList.remove('is-idle');
+    clearTimeout(fsIdleTimer);
+    fsIdleTimer = setTimeout(() => el.classList.add('is-idle'), FS_IDLE_MS);
+  }
+
+  /** 进 / 退全屏都把界面收敛到同一份状态 —— 不管是谁触发的：
+   *  我们的按钮、键盘 Esc、还是浏览器自己的 F11。 */
+  function fsSync() {
+    const on = !!document.fullscreenElement;
+    document.documentElement.classList.toggle('fs-mode', on);
+    clearTimeout(fsIdleTimer);
+    const el = $('fs-exit');
+    if (!on && el) el.classList.remove('is-idle');
+    if (on) fsPoke();
+  }
+
+  async function fsEnter() {
+    try {
+      await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+    } catch (err) {
+      showError('浏览器没让进全屏：' + (err && err.message ? err.message : String(err)));
+    }
+  }
+
+  async function fsExit() {
+    // 退不出去也没什么可补救的 —— 浏览器自己还留着 Esc 这条路。
+    try { if (document.fullscreenElement) await document.exitFullscreen(); } catch { /* 忽略 */ }
+  }
+
+  function wireFullscreen() {
+    if ($('btn-full')) $('btn-full').addEventListener('click', fsEnter);
+    const x = $('fs-exit');
+    if (x) x.addEventListener('click', fsExit);
+    document.addEventListener('fullscreenchange', fsSync);
+    for (const ev of ['mousemove', 'pointerdown', 'wheel', 'keydown', 'scroll', 'touchstart']) {
+      document.addEventListener(ev, fsPoke, { passive: true, capture: true });
+    }
+  }
+
   function bind() {
     $('btn-pick').addEventListener('click', pickFolder);
     $('btn-auto').addEventListener('click', autoArrange);
     $('btn-generate').addEventListener('click', generate);
+
+    wireFullscreen();
 
     $('btn-pick-output').addEventListener('click', async () => {
       try {
