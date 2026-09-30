@@ -479,6 +479,40 @@ button { color: inherit; font: inherit; }
   cursor: pointer;
 }
 .status .page-auto-speed:hover { border-color: #b9bfae; }
+/* ============================================================================
+   全屏开关（Phase 39）：按一下进浏览器真全屏（标签页 / 地址栏都收走）
+   ============================================================================
+
+   佘先生：「我想可以不可以真正的全屏，就是说浏览器没有标签页」。
+
+   长相刻意和旁边那颗自动翻页开关同一套（小药丸、同一个边框色、同样 9px 字），
+   让人一眼看出"它和旁边那两颗一样能点"；进全屏后整体反色并改写成「退出全屏」
+   —— 状态写在按钮自己身上，不用额外提示。
+   宽度按内容走（覆盖 `.controls button` 给的 36px 见方），所以不会把行撑高。
+
+   ⚠ 本文件受上游契约约束，有两条**全文正则**会扫整个 styles.css：
+     ① 不许出现 box-shadow 的 inset 写法；② 不许出现「book + 连字符 + gutter」
+     那个类名。这两条**连注释里都不能写出字面量**（正则是全文匹配，注释也算），
+     要说明就绕开原词。 */
+.status .page-full {
+  width: auto;                 /* 覆盖 .controls button 给的 36px 见方 */
+  height: auto;
+  padding: 2px 10px;
+  border: 1px solid #dcdfd5;
+  border-radius: 999px;
+  background: #fff;
+  color: #666e5d;
+  font: 400 9px/1.4 var(--book-sans);
+  letter-spacing: .04em;
+  cursor: pointer;
+}
+.status .page-full:hover { border-color: #b9bfae; }
+.status .page-full[aria-pressed="true"] {
+  border-color: #6b735d;
+  background: #6b735d;
+  color: #fbfbf8;
+}
+
 a:focus-visible, button:focus-visible { outline: 2px solid #6b735d; outline-offset: 4px; }
 /* ★ Phase 28 原本在这里还有一条"窄窗口把脚部那行小字藏掉"的规则；
    Phase 31 那行字**整行删掉**了（HTML 里没有、样式里也不该留），
@@ -486,3 +520,89 @@ a:focus-visible, button:focus-visible { outline: 2px solid #6b735d; outline-offs
 @media (max-width: 700px) { .book-header { grid-template-columns: 1fr auto; } .book-header h1 { font-size: 13px; } .book-header #orientation { display: none; } }
 @media (prefers-reduced-motion: reduce) { .book { transition: none; } }
 @media print { body { overflow: visible; } .book-header, .controls { display: none; } }
+
+/* ============================================================================
+   ★★★ Phase 41/42：「净屏」—— 操作条收起来、画册顶满整屏 ★★★
+   ============================================================================
+   佘先生 2026-09-30：「两张图片的全屏模式时，四周不要有任何留白，包括下面的图片
+     页面操作UI组件也不要显示，我点击 Esc 或者双击鼠标左键后再显示…… UI 组件
+     可以显示在图片上」。
+
+   为什么"留白"那么显眼：`.book-rig` 一直顶着一个 **640px 的高度上限**（早期给矮窗口
+     留的），于是在 2560×1600 的屏上画册只摊开 1024×640 —— 四周全是白的，占比只有
+     1/6。净屏时：`.controls` 整条不显示（第 2 行空了 ⇒ 第 1 行自然拿到整屏高），
+     `.stage` 去掉那 4px 防裁投影的 padding，`.book-rig` 去掉上限。
+     ★ 本机屏幕 2560×1600 = 1.600，而跨页比例 = 2 × var(--page-ratio) = 1.6
+       ⇒ 算下来**逐像素顶满四边**，一条背景都露不出来。
+     （屏幕比例若不是 1.6，左右会剩一点背景 —— 那是页面比例决定的，不是留白没清干净。）
+
+   ★ Phase 42 把这一组从 `.fs-reading` 改挂到 **`.fs-net`**（净屏 = 操作条收着），
+     于是一条规则同时服务两种来路：
+       · 在全屏里（`.fs-reading`）—— F11 /「全屏」按钮 /「打开画册」三条路都算；
+       · 普通窗口里，用户按了右下角那颗「收起条」开关。
+     全屏里把操作条叫出来是**浮层**（`.fs-bar`：固定在下沿、半透明压在照片上），
+     所以版面不回缩 —— 正是他要的"两张图全屏时 UI 可以显示在图片上"。
+     退出全屏 ⇒ flipbook.js 把这两个类都摘掉 ⇒ 操作条回到照片**下方**的原样。
+
+   ⚠ `.fs-reading` / `.fs-net` 只在**真全屏**、或用户主动收起时才挂得上
+     （见 flipbook.js 的 fsReadingMode / applyFsNet）。普通窗口里一个像素都不会变。
+   ⚠ 本文件受上游契约约束：全文不许出现被禁的字面量（见 html-contract.test.mjs），
+     注释里也不行。 */
+html.fs-net .controls { display: none; }
+html.fs-net .stage { padding: 0; }
+html.fs-net .book-rig {
+  /* 去掉 640px 上限：高度吃掉这一席位的全部，宽度由页面比例推出来 */
+  width: min(100%, calc(100cqh * var(--page-ratio) * 2));
+  height: 100cqh;
+}
+/* 画册顶到屏幕边了，那圈投影会被裁掉半截 ⇒ 干脆不画（顺带省一次大范围合成）*/
+html.fs-net .book { filter: none; }
+
+/* 双击唤出的控制条：浮在照片上，不再把画面顶下去 */
+html.fs-reading.fs-bar .controls {
+  display: grid;
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 60;
+  transform: translateX(-50%);
+  padding: 10px 14px;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 86%);
+  box-shadow: 0 8px 26px rgb(28 30 24 / 26%);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+/* 灯箱里的照片：按住能拖（Phase 41 优化一）—— 光标本身就把话说清楚 */
+.lightbox { cursor: grab; }
+.lightbox.is-panning { cursor: grabbing; }
+
+/* ★★ Phase 42：右下角那颗「收起条 / 显示条」开关
+   ----------------------------------------------------------------------------
+   佘先生：「增加一个隐藏页数操作UI组块的功能，当然也可以关闭，就在右下角的位置
+   放这个功能的操作组块」。
+   · 它是**整条界面**上唯一常驻的东西，所以做得淡（半透明白药丸），不抢照片；
+   · 它自己**永远不藏** —— 藏了就再也叫不回来了；
+   · 操作条在版面里时它抬高一点（免得压住控制条），收起来了就贴底（由 JS 算 bottom）；
+   · `z-index:70` 低于灯箱的 300 ⇒ 灯箱开着时它自然被盖住，不用另写联动。 */
+.bar-toggle {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 70;
+  padding: 7px 13px;
+  border: 1px solid #dcdfd5;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 88%);
+  color: #4b5142;
+  font: 400 12px/1 var(--book-sans);
+  letter-spacing: .04em;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+.bar-toggle:hover { border-color: #b9bfae; background: #fff; }
+.bar-toggle:focus-visible { outline: 2px solid #6b735d; outline-offset: 2px; }
+

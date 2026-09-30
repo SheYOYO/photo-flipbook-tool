@@ -133,6 +133,10 @@ let lightboxState = null;      // { s, x, y, w, h } —— 与 applyZoom 同一�
 let lightboxReadyAt = 0;       // 灯箱里缩放的冷却到点时间戳
 let lightboxReturnTo = null;   // 关掉灯箱后，书要回到哪一页（双击前那一页）
 let lightboxReturnRun = 0;     // "待还原"的班次号：用户自己一翻页就把它加一，旧的那趟自动作废
+// ★ Phase 41 优化一：按住左键拖 = **移动照片**
+//   （佘先生 2026-09-30：「单个图片的全屏状态下，我鼠标左键摁住移动光标时允许移动图片」）
+let lightboxDrag = null;        // { id, x, y, ox, oy } —— 按下的那一点 + 当时的左上角
+let lightboxDragged = false;    // 这一下到底拖没拖（用来吃掉随之而来的那个 click）
 let photoAtLastDown = null;    // 本次按下点到的照片（只在软页上才算）
 let photoAtPrevDown = null;    // 上一次按下点到的照片（双击读这份，与 pageAtPrevDown 同源）
 const LIGHTBOX_MAX = 8;        // 灯箱里最多放大到 8 倍（再大就是看像素了）
@@ -932,7 +936,18 @@ function lightboxEnsure() {
   box.appendChild(close);
   document.body.appendChild(box);
   close.addEventListener("click", () => lightboxClose());
-  box.addEventListener("click", (event) => { if (event.target === box) lightboxClose(); });
+  // ★ Phase 41：按住左键拖 = 移动照片。灯箱铺满视口 ⇒ 指针永远落在 box 上，
+  //   pointermove 会自己冒泡过来，**不要 setPointerCapture** ——
+  //   一旦捕获，mousedown/mouseup 会被重定向到 box ⇒ 连"点一下图片"都会被当成
+  //   "点到暗处"而误关（实测踩过这一下）。
+  box.addEventListener("pointerdown", lightboxPanDown);
+  box.addEventListener("pointermove", lightboxPanMove);
+  box.addEventListener("pointerup", lightboxPanUp);
+  box.addEventListener("pointercancel", lightboxPanUp);
+  box.addEventListener("click", (event) => {
+    if (lightboxDragged) { lightboxDragged = false; return; }   // 刚拖过 ⇒ 这一下是拖的余波
+    if (event.target === box) lightboxClose();
+  });
   lightboxBox = box;
   return box;
 }
@@ -1080,6 +1095,58 @@ function lightboxZoom(event) {
   lightboxApply();
   return true;
 }
+
+// ---------------------------------------------------------------
+// ★★★ Phase 41 优化一：灯箱里按住左键拖 = 移动照片 ★★★
+// ---------------------------------------------------------------
+//
+// 量纲与 `lightboxZoom` 完全一致（`transform-origin: 0 0`、位移就是左上角坐标），
+// 所以拖拽只是"起点 + 位移"，不做任何换算 —— 另写一套量纲正是当初"放大时左右晃"
+// 的根因（findings 91），这里不重犯。
+// ⚠ 拖过（位移 ≥ 3px）就吃掉松手那一下 click：拖到图片外面松手时，浏览器补的 click
+//   的 target 是灯箱本身 ⇒ 不挡的话"拖一下"会顺带把灯箱关掉。
+
+const LIGHTBOX_DRAG_MIN = 3;
+
+function lightboxPanDown(event) {
+  const st = lightboxState;
+  if (event.button !== 0 || !st) return;                       // 只认左键
+  if (event.target && event.target.closest && event.target.closest(".lightbox__close")) {
+    return;                                                    // 叉号上按下不当作拖拽
+  }
+  lightboxDrag = { id: event.pointerId, x: event.clientX, y: event.clientY,
+                   ox: st.x, oy: st.y };
+  lightboxDragged = false;
+  // ⚠ 这里**故意不 preventDefault**：在 Chrome 里取消 pointerdown 会把随后的
+  //   兼容鼠标事件（含 click）一起吞掉 ⇒ 「点暗处关闭」那条就被废了（实测踩过）。
+  //   防原生拖图/选字已经由 `.lightbox{user-select:none}` 和 `img.draggable=false`
+  //   兜住了；真要拦，等位移过阈值以后在 pointermove 里拦。
+}
+
+function lightboxPanMove(event) {
+  const d = lightboxDrag;
+  const st = lightboxState;
+  if (!d || !st || event.pointerId !== d.id) return;
+  const dx = event.clientX - d.x;
+  const dy = event.clientY - d.y;
+  if (!lightboxDragged && Math.abs(dx) + Math.abs(dy) < LIGHTBOX_DRAG_MIN) return;
+  if (!lightboxDragged) event.preventDefault();                 // 起步这一下才拦
+  lightboxDragged = true;
+  lightboxBox.classList.add("is-panning");
+  lightboxState = { s: st.s, x: d.ox + dx, y: d.oy + dy, w: st.w, h: st.h };
+  lightboxApply();
+}
+
+function lightboxPanUp(event) {
+  const d = lightboxDrag;
+  if (!d) return;
+  if (event && event.pointerId != null && event.pointerId !== d.id) return;
+  lightboxDrag = null;
+  if (lightboxBox) lightboxBox.classList.remove("is-panning");
+}
+
+// 指针要是拖到窗口外面才松手，box 上收不到 pointerup ⇒ 窗口这一层兜一下
+window.addEventListener("pointerup", lightboxPanUp);
 
 /** 窗口尺寸变了就重新摆一次（灯箱开着时） */
 window.addEventListener("resize", () => {
@@ -1302,6 +1369,20 @@ function jumpToEndInstant(dir) {
 bookElement.addEventListener("dblclick", (event) => {
   if (event.button !== 0) return;      // 只认鼠标左键
   stopAuto();
+
+  // ★★★ Phase 41：全屏里控制条收着 ⇒ 这一下双击先把它**唤回来**（见文件末尾 fsBar* 那段）。
+  //   ⚠ 必须排在照片/封面那两条之前：全屏时每个页面本身就是整张照片，不先接管的话
+  //     "叫 UI"永远会被"单张全屏"抢走，用户就找不到按钮了。
+  //   ⚠ 双击的那两下单击已经各翻了一页 ⇒ 借灯箱那套"悄悄还回去"的机制把页位复原，
+  //     不能让"叫个 UI"顺手把书翻走两页。
+  if (fsReadingMode() && !fsBarVisible()) {
+    fsBarShow();
+    if (pageAtPrevDown != null) {
+      lightboxReturnTo = pageAtPrevDown;
+      lightboxReturnBook();
+    }
+    return;
+  }
 
   // ⚠⚠ **必须用按下那一刻记下的 prev 快照来判起点**，不能看当下：
   //   库默认 `disableFlipByClick:false` ⇒ 单击书页本来就会翻页（原功能，保留）。
@@ -1779,3 +1860,305 @@ window.__auto = {
 };
 
 renderAutoButton();
+
+
+// ============================================================================
+// 全屏（Phase 39）：佘先生「我想可以不可以真正的全屏，就是说浏览器没有标签页」
+// ============================================================================
+//
+// 他要的"真正的全屏"就是**浏览器的全屏模式**（F11 那种）：标签页、地址栏，
+// 连 Windows 任务栏一起收走，整块屏幕只剩画册。这事只有 Fullscreen API 做得到
+// —— 单把页面 CSS 拉大永远留着浏览器的壳。
+//
+// ★ 为什么按钮是 JS 现拼、不写进 HTML：
+//   成品的 index.html 由 make_flipbook.py 的内嵌模板生成，改模板就得**重出书**；
+//   而 flipbook.js / styles.css 是逐字节拷贝的，改完同步一下即可。
+//   所以按钮在脚本里 createElement、插进 .auto-row（和灯箱同一个套路）。
+//
+// 出口有三条，都是浏览器/系统自带的：再点一下这颗按钮、按 Esc、按 F11。
+// 三条都走 fullscreenchange ⇒ 按钮文案永远跟真实状态一致，不会"看着没进全屏"。
+//
+// ⚠ 无头 Chromium **支持** requestFullscreen（fullscreenElement 有值），
+//   但 **Esc 退全屏不生效** —— 所以验收里退全屏只量"再点一下这颗按钮"，
+//   别量 Esc（量了是假红，findings 117）。
+// ⚠ 老成品 HTML 可能没有 .auto-row ⇒ 安静地不加按钮，其余功能一字不动。
+
+const FULLSCREEN_OFF_LABEL = "全屏";
+const FULLSCREEN_ON_LABEL = "退出全屏";
+const FULLSCREEN_OFF_TITLE = "全屏看（浏览器标签页会收起来）";
+const FULLSCREEN_ON_TITLE = "退出全屏（也可以按 Esc）";
+
+const fullscreenButton = (() => {
+  const row = document.querySelector(".status .auto-row") ||
+              document.querySelector(".auto-row");
+  if (!row) return null;                                        // 老成品没有这一行
+  if (!document.documentElement.requestFullscreen) return null;  // 浏览器不支持
+  if (row.querySelector("#page-full")) return null;              // 已经有一颗了
+  const btn = document.createElement("button");
+  btn.id = "page-full";
+  btn.type = "button";
+  btn.className = "page-full";
+  btn.textContent = FULLSCREEN_OFF_LABEL;
+  btn.title = FULLSCREEN_OFF_TITLE;
+  btn.setAttribute("aria-pressed", "false");
+  row.appendChild(btn);
+  return btn;
+})();
+
+function renderFullscreenButton() {
+  if (!fullscreenButton) return;
+  const on = Boolean(document.fullscreenElement);
+  fullscreenButton.textContent = on ? FULLSCREEN_ON_LABEL : FULLSCREEN_OFF_LABEL;
+  fullscreenButton.title = on ? FULLSCREEN_ON_TITLE : FULLSCREEN_OFF_TITLE;
+  fullscreenButton.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+// requestFullscreen 必须在**用户手势**里调用，否则被拒 —— 这是浏览器的规矩，
+// 不是 bug。所以这里只被 click 处理器调用，并且把失败安静地记一笔就好。
+function enterFullscreen() {
+  const p = document.documentElement.requestFullscreen({ navigationUI: "hide" });
+  if (p && typeof p.catch === "function") {
+    p.catch((err) => { console.warn("flipbook: 进全屏被拒", err); });
+  }
+}
+
+function exitFullscreen() {
+  const p = document.exitFullscreen ? document.exitFullscreen() : null;
+  if (p && typeof p.catch === "function") {
+    p.catch(() => { /* 已经不在全屏了，忽略 */ });
+  }
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) exitFullscreen();
+  else enterFullscreen();
+}
+
+if (fullscreenButton) {
+  fullscreenButton.addEventListener("click", toggleFullscreen);
+  // 进/退都靠这一条同步 —— Esc、F11、系统手势退出的，也一样能同步到
+  document.addEventListener("fullscreenchange", renderFullscreenButton);
+  renderFullscreenButton();
+}
+
+// 自测口子（验收里主要点真按钮，这几个是兜底/取证用）
+window.__full = {
+  toggle: toggleFullscreen,
+  enter: enterFullscreen,
+  exit: exitFullscreen,
+  isOn: () => Boolean(document.fullscreenElement),
+  hasButton: () => Boolean(fullscreenButton),
+};
+
+
+// ============================================================================
+// ★★★ Phase 41/42：真全屏里「净屏阅读」—— 操作条收起来，双击再唤回来 ★★★
+// ============================================================================
+//
+// 佘先生 2026-09-30：「两张图片的全屏模式时，四周不要有任何留白，包括下面的图片
+//   页面操作UI组件也不要显示，我点击 Esc 或者双击鼠标左键后再显示图片页面操作UI组件，
+//   此时的 UI 组件可以显示在图片上」。
+// 佘先生 2026-09-30 晚（Phase 42）：「无论单个或两个图片全屏显示后**退出恢复成原来的
+//   界面** —— 页面操作UI组块显示在图片**下方**（注意不是图片之内）……只允许两张图片
+//   全屏的情况下有页数操作UI组块放在图片之内」＋「增加一个隐藏页数操作UI组块的功能，
+//   当然也可以关闭，就在右下角的位置放这个功能的操作组块」。
+//
+// ★ 什么算"全屏"—— 两条硬信号，一条都不靠猜：
+//   ① 走 Fullscreen API（控制条那颗「全屏」按钮）⇒ `document.fullscreenElement` 有值；
+//   ② **浏览器自带全屏（F11）**、或工作台「打开画册」的 `--app=… --start-fullscreen`
+//      ⇒ `matchMedia("(display-mode: fullscreen)")` 为真。
+//   （Phase 41 曾经用过第三条"URI 上挂 `#fullscreen` 标记"，**已整条撤掉**：
+//    那个标记会赖着不走 ⇒ 退出全屏后页面永远停在静读态，见 findings 126。）
+//   ⚠ **绝不能用几何去猜「浏览器壳收走了没」**。实测（findings 122/123）：无头
+//     Chromium 在**普通窗口**下 `innerHeight === outerHeight === screen.height` 同样
+//     成立 ⇒ 一切几何判据在无头验收里恒为真，会把整套断言变成假绿/假红。
+//   ⚠ `display-mode` 在 Chrome **新无头**下恒为 false（即便 `fullscreenElement` 有值）
+//     ⇒ 必须是"或"：两条都认。
+//
+// ★ 手势（写清楚，免得下次自己都忘了）：
+//   · 进全屏 / 带标记启动 ⇒ 控制条立刻收起来，画册顶满整屏；
+//   · **双击左键** ⇒ 控制条冒出来，浮在照片上；再双击照片仍是"单张全屏"、
+//     双击封面/封底仍是"整叠翻页"（原功能一个都不夺）；
+//   · 控制条闲着（6 秒没动静、鼠标也不压在上面）⇒ 自己收回去；
+//   · **Esc** 在真全屏里是浏览器保留的（按下去直接退出全屏，脚本拦不住）⇒ 退出全屏后
+//     控制条自然回到页面下方。想"只收 UI 而不退全屏"，用双击。
+//
+// 换行符提醒：这套全是 JS 现拼 + CSS 类，模板里一行不加 ⇒ 老书同步这两个文件即可。
+
+const FS_READING_CLASS = "fs-reading";
+const FS_BAR_CLASS = "fs-bar";
+const FS_NET_CLASS = "fs-net";
+const FS_BAR_IDLE_MS = 6000;
+
+let fsBarTimer = 0;
+let fsBarHover = false;
+let fsNetOn = false;          // 操作条这会儿收着没（<html>.fs-net 与它同步）
+let fsNetUserOff = false;     // ★ Phase 42：普通窗口里用户按右下角那颗开关收起来了
+let fsWasReading = false;     // 上一轮算出来在不在全屏里（用来判"刚进/刚退"）
+
+// ★ Phase 42：浏览器外壳收走了没 —— 只认 `display-mode` 这条媒体特性。
+//   实测（findings 123/124）：真机普通窗口 false、真机 `--app=` 全屏 true；
+//   无头壳普通窗口也是 false、点 API 全屏变 true ⇒ 真机分得开、无头也不假绿。
+//   ⚠ 几何量（inner/outer/screen）在无头里恒等，绝不能拿来当判据（findings 122）。
+const fsDisplayQuery = window.matchMedia("(display-mode: fullscreen)");
+
+function fsDisplayFullscreen() {
+  return Boolean(fsDisplayQuery.matches);
+}
+
+/** 现在该不该"净屏阅读"（画册顶满整屏、操作条收起来） */
+function fsReadingMode() {
+  return Boolean(document.fullscreenElement) || fsDisplayFullscreen();
+}
+
+function fsBarVisible() {
+  return document.documentElement.classList.contains(FS_BAR_CLASS);
+}
+
+function fsBarHide() {
+  document.documentElement.classList.remove(FS_BAR_CLASS);
+  window.clearTimeout(fsBarTimer);
+  fsBarTimer = 0;
+  applyFsNet();
+}
+
+function fsBarPoke() {
+  if (!fsBarVisible()) return;
+  window.clearTimeout(fsBarTimer);
+  fsBarTimer = window.setTimeout(fsMaybeAutoHide, FS_BAR_IDLE_MS);
+}
+
+/** 闲够了就收回去 —— 但**正在用**的时候不许收 */
+function fsMaybeAutoHide() {
+  if (!fsReadingMode() || !fsBarVisible()) return;
+  if (fsBarHover) return;                                     // 鼠标还压在控制条上
+  const el = document.activeElement;                          // 正在输入框里打字
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+    return;
+  }
+  const auto = document.getElementById("page-auto");          // 自动翻页开着 ⇒ 留着「停止」
+  if (auto && auto.getAttribute("aria-pressed") === "true") return;
+  fsBarHide();
+}
+
+function fsBarShow() {
+  if (!fsReadingMode()) return;
+  document.documentElement.classList.add(FS_BAR_CLASS);
+  fsBarPoke();
+  applyFsNet();
+}
+
+/**
+ * 把「该不该净屏 / 操作条收没收」落到 <html> 上；版面真变了再补派一次 resize。
+ *
+ *  · 全屏里：操作条默认收着；双击或按右下角那颗开关把它叫出来时是**浮层**
+ *    （position:fixed，不占版面）⇒ 画面不会因此缩回去（他要的"UI 浮在图片上"）。
+ *  · 普通窗口：只有用户按了开关才收（收起来 ⇒ 画面顶满；再按恢复"照片下方"的原样）。
+ */
+function applyFsNet() {
+  const reading = fsReadingMode();
+  const hidden = reading ? !fsBarVisible() : fsNetUserOff;
+  let changed = false;
+  if (document.documentElement.classList.contains(FS_READING_CLASS) !== reading) {
+    document.documentElement.classList.toggle(FS_READING_CLASS, reading);
+    changed = true;
+  }
+  if (fsNetOn !== hidden) {
+    fsNetOn = hidden;
+    document.documentElement.classList.toggle(FS_NET_CLASS, hidden);
+    changed = true;
+  }
+  syncBarToggle();
+  // 书是按容器尺寸算页大小的（翻页库自己监听 window resize）⇒ 版面变了就派一次让它重排
+  if (changed) window.dispatchEvent(new Event("resize"));
+}
+
+/**
+ * 进/退全屏都收敛到这一条。
+ *
+ * ★★ Phase 42 的关键一条：**退出全屏必须把界面还原** —— 把浮层收掉，把用户那次
+ *    "收起"也一并清掉 ⇒ 操作条回到照片**下方**（他要的"退出恢复成原来的界面"）。
+ *    Phase 41 漏了这一步：URI 上的 `#fullscreen` 标记一直在，退出后页面还赖在静读态
+ *    （findings 126）。现在状态挂在会自己变回去的信号上，退出去就真的退出去。
+ */
+function syncFsReading() {
+  const on = fsReadingMode();
+  if (on !== fsWasReading) {
+    fsWasReading = on;
+    fsBarHide();                    // 刚进 / 刚退，先把浮层收起来
+    // ★ Phase 42 修：只有“真的退出全屏”这一刻才清用户那次收起
+    //——普通窗口里的 resize（包括 applyFsNet 自己补派的那次）不许清，否则开关等于没按。
+    if (!on) fsNetUserOff = false;
+  }
+  applyFsNet();
+}
+
+// 任何一点动静都把"闲着"的计时重新开始（capture：库会 stopPropagation，findings 75）
+for (const type of ["pointermove", "pointerdown", "wheel", "keydown", "scroll", "touchstart"]) {
+  window.addEventListener(type, fsBarPoke, true);
+}
+
+const fsFooter = document.querySelector(".controls");
+if (fsFooter) {
+  fsFooter.addEventListener("pointerenter", () => { fsBarHover = true; fsBarPoke(); });
+  fsFooter.addEventListener("pointerleave", () => { fsBarHover = false; fsBarPoke(); });
+}
+
+// ---------------------------------------------------------------------------
+// ★★ Phase 42：右下角那颗「收起条 / 显示条」开关
+//   他：「增加一个隐藏页数操作UI组块的功能，当然也可以关闭，就在右下角的位置放这个
+//   功能的操作组块」。它和"净屏阅读"共用一套状态：
+//     · 全屏里按它 ⇒ 把浮层叫出来 / 收回去（与双击等效）；
+//     · 普通窗口里按它 ⇒ 操作条整条收起、画面顶满；再按恢复"照片下方"的原样。
+//   ⚠ 这颗开关自己**永远不藏**（藏了就再也叫不回来了）；灯箱 z-index:300 会盖住它。
+// ---------------------------------------------------------------------------
+const barToggle = document.createElement("button");
+barToggle.id = "bar-toggle";
+barToggle.type = "button";
+barToggle.className = "bar-toggle";
+document.body.appendChild(barToggle);
+
+function syncBarToggle() {
+  const reading = fsReadingMode();
+  const shown = reading ? fsBarVisible() : !fsNetUserOff;
+  barToggle.textContent = shown ? "收起条" : "显示条";
+  barToggle.setAttribute("aria-pressed", shown ? "true" : "false");
+  barToggle.setAttribute("aria-label", shown ? "收起页面操作组块" : "显示页面操作组块");
+  barToggle.title = shown ? "把页面操作组块收起来（画面更大）" : "把页面操作组块显示出来";
+  // 操作条在版面里时别压住它：抬到它上面；收起来了就贴底
+  const footer = document.querySelector(".controls");
+  const footerH = footer && getComputedStyle(footer).display !== "none"
+    ? footer.offsetHeight : 0;
+  barToggle.style.bottom = (footerH > 0 ? footerH + 12 : 14) + "px";
+}
+
+barToggle.addEventListener("click", () => {
+  if (fsReadingMode()) {
+    if (fsBarVisible()) fsBarHide(); else fsBarShow();
+  } else {
+    fsNetUserOff = !fsNetUserOff;
+  }
+  applyFsNet();
+});
+
+document.addEventListener("fullscreenchange", syncFsReading);
+// 浏览器自带全屏（F11）/ 命令行 `--start-fullscreen` 的进出，只有这条媒体特性会动
+if (fsDisplayQuery.addEventListener) {
+  fsDisplayQuery.addEventListener("change", syncFsReading);
+} else if (fsDisplayQuery.addListener) {
+  fsDisplayQuery.addListener(syncFsReading);   // 老内核兜底
+}
+window.addEventListener("resize", syncFsReading);
+syncFsReading();                    // 命令行拉起的全屏窗口，一进来就是净屏的
+
+Object.assign(window.__full, {
+  clean: () => fsReadingMode(),        // 该不该净屏阅读
+  displayFs: fsDisplayFullscreen,      // 浏览器外壳收走了没（F11 那条路的判据）
+  net: () => fsNetOn,                  // 操作条这会儿收着没
+  bar: () => fsBarVisible(),           // 浮层露着没
+  showBar: fsBarShow,
+  hideBar: fsBarHide,
+  toggleBar: () => barToggle.click(),
+  hasBarToggle: () => Boolean(document.getElementById("bar-toggle")),
+  idleMs: FS_BAR_IDLE_MS,
+});
