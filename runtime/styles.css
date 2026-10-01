@@ -518,7 +518,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid #6b735d; outline-offs
    Phase 31 那行字**整行删掉**了（HTML 里没有、样式里也不该留），
    所以这里连那条一起拿掉 —— 留着就是一条永远不会命中的死规则。 */
 @media (max-width: 700px) { .book-header { grid-template-columns: 1fr auto; } .book-header h1 { font-size: 13px; } .book-header #orientation { display: none; } }
-@media (prefers-reduced-motion: reduce) { .book { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .book, .bar-toggle { transition: none; } }
 @media print { body { overflow: visible; } .book-header, .controls { display: none; } }
 
 /* ============================================================================
@@ -591,10 +591,8 @@ html.fs-reading.fs-bar .controls {
    · 操作条在版面里时它抬高一点（免得压住控制条），收起来了就贴底（由 JS 算 bottom）；
    · `z-index:70` 低于灯箱的 300 ⇒ 灯箱开着时它自然被盖住，不用另写联动。 */
 .bar-toggle {
-  position: fixed;
-  right: 14px;
-  bottom: 14px;
-  z-index: 70;
+  /* ★ Phase 46：不再自己钉在视口上 —— 位置（含 z-index）交给右下角那座 #fs-dock 统一摆 */
+  position: relative;
   padding: 7px 13px;
   border: 1px solid #dcdfd5;
   border-radius: 999px;
@@ -609,4 +607,70 @@ html.fs-reading.fs-bar .controls {
 }
 .bar-toggle:hover { border-color: #b9bfae; background: #fff; }
 .bar-toggle:focus-visible { outline: 2px solid #6b735d; outline-offset: 2px; }
+
+/* ★★ Phase 46：全屏里把它淡到「不仔细看发现不了」（佘先生 2026-10-01 点名）
+   ----------------------------------------------------------------------------
+   他：「两张图片全屏的状态下，右下角的退出全屏的 UI 组块显示条的颜色淡化，
+   就是用户不仔细看发现不了这个 UI 组块」。
+   做法 = 整颗药丸降不透明度，**不用 display / visibility** ⇒ 看不见 ≠ 点不着：
+   opacity 不参与命中测试，鼠标压上去照样点得动；:hover 与 :focus-visible 两条
+   一压上去立刻回到不透明 —— 想用它的时候它自己就亮出来，不需要额外的唤回手段。
+   ⚠ 只挂 html.fs-reading（真全屏）—— 普通窗口里那颗药丸一个像素都不动。
+     它照旧是「整条界面上唯一常驻的东西」，亮着才叫得回来（Phase 42 的约定）。 */
+html.fs-reading .bar-toggle { opacity: .3; transition: opacity .18s ease; }
+html.fs-reading .bar-toggle:hover,
+html.fs-reading .bar-toggle:focus-visible { opacity: 1; }
+
+/* ★★★ Phase 46 之二：右下角那座「浮件座」+ 搬出来的「退出全屏」（佘先生 2026-10-01）
+   ----------------------------------------------------------------------------
+   他：「调整这个全屏UI组块的位置，把它放在显示条UI组块的上方」⇒ 选的是 B 方案：
+   把「退出全屏」**从控制条里拎出来**，做成一颗独立组件，钉在右下角、药丸的正上方。
+
+   为什么要有这座座子：让"谁在谁上面"由**版面顺序**决定，不靠写死的像素差撑 ——
+   座里从上到下 =「退出全屏」→「收起条 / 显示条」药丸（flex 纵向队列，间距 10px）。
+   药丸因控制条浮出而抬高时整座一起抬，两颗的相对关系永远不变。
+   · right / bottom 由 flipbook.js 算（要避开"还在版面里的控制条"）⇒ 这里只给初值；
+   · pointer-events:none 挂在座上、auto 挂在两颗上 ⇒ 座子那片空当不挡照片的点击；
+   · z-index:70 沿用 Phase 42 的口径：低于灯箱的 300 ⇒ 灯箱开着时自然被盖住。
+
+   ⚠ 本文件受上游契约约束：全文不许出现被禁的字面量（见 html-contract.test.mjs），
+     注释里也不行。 */
+#fs-dock {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+#fs-dock > * { pointer-events: auto; }
+
+/* 搬出控制条的那颗：长相向旁边的药丸看齐，两颗才像"一套"。
+   ⚠ `.status .page-full` 那套是给"控制条里面"写的，搬到这儿就不匹配了 —— 必须另给
+     一套，否则它会掉回浏览器默认按钮的长相（灰底粗边、跟旁边那颗不是一套）。 */
+#fs-dock .page-full {
+  width: auto;
+  height: auto;
+  padding: 7px 13px;
+  border: 1px solid #dcdfd5;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 88%);
+  color: #4b5142;
+  font: 400 12px/1 var(--book-sans);
+  letter-spacing: .04em;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+#fs-dock .page-full:hover { border-color: #b9bfae; background: #fff; }
+#fs-dock .page-full:focus-visible { outline: 2px solid #6b735d; outline-offset: 2px; }
+
+/* 淡化：和旁边那颗药丸同一条口径（都在真全屏里淡，压上去 / 聚焦就亮回来）。 */
+html.fs-reading #fs-dock .page-full { opacity: .3; transition: opacity .18s ease; }
+html.fs-reading #fs-dock .page-full:hover,
+html.fs-reading #fs-dock .page-full:focus-visible { opacity: 1; }
 

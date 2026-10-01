@@ -1883,6 +1883,7 @@ renderAutoButton();
 //   成品的 index.html 由 make_flipbook.py 的内嵌模板生成，改模板就得**重出书**；
 //   而 flipbook.js / styles.css 是逐字节拷贝的，改完同步一下即可。
 //   所以按钮在脚本里 createElement、插进 .auto-row（和灯箱同一个套路）。
+//   ★ Phase 46：真全屏里它会**搬出**这一行、挂到右下角那座浮件座，见文件末尾。
 //
 // 出口有三条，都是浏览器/系统自带的：再点一下这颗按钮、按 Esc、按 F11。
 // 三条都走 fullscreenchange ⇒ 按钮文案永远跟真实状态一致，不会"看着没进全屏"。
@@ -1897,9 +1898,16 @@ const FULLSCREEN_ON_LABEL = "退出全屏";
 const FULLSCREEN_OFF_TITLE = "全屏看（浏览器标签页会收起来）";
 const FULLSCREEN_ON_TITLE = "退出全屏（也可以按 Esc）";
 
+// ★ Phase 46：把这颗按钮"原来待的那一行"记在模块里 —— 退出全屏时要把它放回去。
+//   判据用 document.fullscreenElement（不是 fsReadingMode）：只有 Fullscreen API
+//   那一路脚本才**有权**退出；F11 / 工作台 `--app=` 是 display-mode 层面的，脚本
+//   退不掉（findings 123/124），那种全屏里把它搬出来只会摆一颗点了没反应的按钮
+//   ⇒ 不搬，那条路的观感与 Phase 45 逐像素相同。
+const fullscreenRow = document.querySelector(".status .auto-row") ||
+                      document.querySelector(".auto-row");
+
 const fullscreenButton = (() => {
-  const row = document.querySelector(".status .auto-row") ||
-              document.querySelector(".auto-row");
+  const row = fullscreenRow;
   if (!row) return null;                                        // 老成品没有这一行
   if (!document.documentElement.requestFullscreen) return null;  // 浏览器不支持
   if (row.querySelector("#page-full")) return null;              // 已经有一颗了
@@ -2090,6 +2098,7 @@ function applyFsNet() {
     document.documentElement.classList.toggle(FS_NET_CLASS, hidden);
     changed = true;
   }
+  syncExitDock();          // ★ Phase 46：先定位置，再让药丸按新队列算自己被抬多高
   syncBarToggle();
   applyFsFill();
   // 书是按容器尺寸算页大小的（翻页库自己监听 window resize）⇒ 版面变了就派一次让它重排
@@ -2171,11 +2180,20 @@ if (fsFooter) {
 //     · 普通窗口里按它 ⇒ 操作条整条收起、画面顶满；再按恢复"照片下方"的原样。
 //   ⚠ 这颗开关自己**永远不藏**（藏了就再也叫不回来了）；灯箱 z-index:300 会盖住它。
 // ---------------------------------------------------------------------------
+// ★★★ Phase 46：右下角那座「浮件座」
+//   佘先生 2026-10-01：「调整这个全屏UI组块的位置，把它放在显示条UI组块的上方」
+//   ⇒ 选的是 B：把「退出全屏」从控制条里**拎出来**当独立组件，钉在右下角、药丸的正上方。
+//   用 flex 纵向队列 ⇒「谁在谁上面」由**版面顺序**决定，不靠写死的像素差撑：
+//   药丸因控制条浮出而抬高时，整座一起抬，两颗的相对关系永远不变。
+const fsDock = document.createElement("div");
+fsDock.id = "fs-dock";
+document.body.appendChild(fsDock);
+
 const barToggle = document.createElement("button");
 barToggle.id = "bar-toggle";
 barToggle.type = "button";
 barToggle.className = "bar-toggle";
-document.body.appendChild(barToggle);
+fsDock.appendChild(barToggle);      // Phase 46：进座（不再直接挂 body）
 
 function syncBarToggle() {
   const reading = fsReadingMode();
@@ -2188,7 +2206,8 @@ function syncBarToggle() {
   const footer = document.querySelector(".controls");
   const footerH = footer && getComputedStyle(footer).display !== "none"
     ? footer.offsetHeight : 0;
-  barToggle.style.bottom = (footerH > 0 ? footerH + 12 : 14) + "px";
+  // ★ Phase 46：抬的是**整座** —— 药丸在座子里按队列排，不能再自己写 bottom
+  fsDock.style.bottom = (footerH > 0 ? footerH + 12 : 14) + "px";
 }
 
 barToggle.addEventListener("click", () => {
@@ -2199,6 +2218,27 @@ barToggle.addEventListener("click", () => {
   }
   applyFsNet();
 });
+
+// ---------------------------------------------------------------------------
+// ★★ Phase 46：把「退出全屏」在「控制条第 2 行」与「右下角那座」之间搬来搬去
+//
+//   佘先生 2026-10-01：「调整这个全屏UI组块的位置，把它放在显示条UI组块的上方」
+//   ⇒ 选的是 B：它从控制条里**搬出来**当独立组件，钉在右下角、药丸的正上方。
+//
+//   ⚠ 搬动 = 同一个节点换爹（不是再 clone 一颗）：id / 文案 / aria 全都不用重挂，
+//     点击处理器也还是原来那一个。`#page-full` 从 Phase 39 起就是脚本现拼的、
+//     HTML 里根本没有 ⇒ 成品书同步这两个文件即可，不用重出书。
+//   ⚠ 队列位置 = 药丸**之前**（flex 纵向下在前 = 视觉在上）⇒「在显示条的上方」
+//     是**版面顺序**保证的，不是算出来的像素差。
+// ---------------------------------------------------------------------------
+function syncExitDock() {
+  if (!fullscreenButton || !fullscreenRow) return;
+  const want = Boolean(document.fullscreenElement);
+  const inDock = fullscreenButton.parentNode === fsDock;
+  if (want === inDock) return;
+  if (want) fsDock.insertBefore(fullscreenButton, barToggle);   // 药丸的上方
+  else fullscreenRow.appendChild(fullscreenButton);             // 放回第 2 行末尾
+}
 
 document.addEventListener("fullscreenchange", syncFsReading);
 // 浏览器自带全屏（F11）/ 命令行 `--start-fullscreen` 的进出，只有这条媒体特性会动
@@ -2275,6 +2315,7 @@ Object.assign(window.__full, {
   hideBar: fsBarHide,
   toggleBar: () => barToggle.click(),
   hasBarToggle: () => Boolean(document.getElementById("bar-toggle")),
+  docked: () => Boolean(fullscreenButton) && fullscreenButton.parentNode === fsDock,
   idleMs: FS_BAR_IDLE_MS,
   scale: () => fsScale,                  // 净屏放大倍数（探针用）
 });
