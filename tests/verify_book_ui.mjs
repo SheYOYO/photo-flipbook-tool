@@ -1889,6 +1889,36 @@ const fsClean = await page.evaluate(() => {
     bookFilter: book ? getComputedStyle(book).filter : null,
     rig: rig ? { w: rig.offsetWidth, h: rig.offsetHeight } : null,
     vw: de.clientWidth, vh: de.clientHeight,
+    // ★★ Phase 46：右下角那座「浮件座」——「退出全屏」搬出去了没、落在哪、淡成什么样
+    //   佘先生 2026-10-01：「调整这个全屏UI组块的位置，把它放在显示条UI组块的上方」
+    //   （选的是 B：从控制条里拎出来当独立组件）。量的全是几何与命中测试，不看 CSS 文本。
+    exit: (() => {
+      const b = document.getElementById('page-full');
+      const t = document.getElementById('bar-toggle');
+      const dock = document.getElementById('fs-dock');
+      const op = (el) => (el ? Number(getComputedStyle(el).opacity) : null);
+      const bb = b ? b.getBoundingClientRect() : null;
+      const tb = t ? t.getBoundingClientRect() : null;
+      const at = bb
+        ? document.elementFromPoint(Math.round((bb.left + bb.right) / 2),
+                                    Math.round((bb.top + bb.bottom) / 2))
+        : null;
+      return {
+        hasDock: !!dock,
+        docked: !!(dock && b && b.parentNode === dock),
+        inBar: !!(b && b.closest('.auto-row')),
+        dockKids: dock ? [...dock.children].map((c) => c.id) : null,
+        label: b ? b.textContent.trim() : '',
+        probeDocked: typeof window.__full.docked === 'function' ? window.__full.docked() : null,
+        opacity: op(b),
+        toggleOpacity: op(t),
+        fromRight: bb ? Math.round(de.clientWidth - bb.right) : null,
+        // 「在药丸上方」= 它的下沿不越过药丸的上沿，而且真留了间隙
+        gapToToggle: (bb && tb) ? Math.round(tb.top - bb.bottom) : null,
+        // 淡成 0.3 不等于点不着：命中测试必须落在它自己身上（findings 116）
+        hitSelf: !!at && at.id === 'page-full',
+      };
+    })(),
   };
 });
 
@@ -1927,6 +1957,27 @@ const fsBarOn = await page.evaluate(() => {
   };
 });
 
+// ★★ Phase 46：全屏里两颗都淡着（不仔细看发现不了）—— 鼠标压上去必须立刻亮回来。
+//   这一条是"淡化"与"消失"的分水岭：只量数值不够，还得量它真的还能被压到。
+await page.hover('#page-full').catch(() => {});
+await page.waitForTimeout(320);
+const fsHoverExit = await page.evaluate(() => {
+  const b = document.getElementById('page-full');
+  return b ? Number(getComputedStyle(b).opacity) : null;
+});
+await page.hover('#bar-toggle').catch(() => {});
+await page.waitForTimeout(320);
+const fsHoverToggle = await page.evaluate(() => {
+  const t = document.getElementById('bar-toggle');
+  return t ? Number(getComputedStyle(t).opacity) : null;
+});
+await page.mouse.move(6, 6);
+await page.waitForTimeout(320);
+const fsUnhover = await page.evaluate(() => {
+  const b = document.getElementById('page-full');
+  return b ? Number(getComputedStyle(b).opacity) : null;
+});
+
 // 再点一下同一颗按钮 ⇒ 退出
 await page.click('#page-full');
 try {
@@ -1950,6 +2001,10 @@ const fsOff = await page.evaluate(() => {
     ctrlDisplay: c ? getComputedStyle(c).display : null,
     rig: rig ? { w: rig.offsetWidth, h: rig.offsetHeight } : null,
     vh: de.clientHeight,
+    // ★ Phase 46：退出全屏 = 界面还原 —— 它必须**搬回**第 2 行，而且不再淡
+    exitInBar: !!(b && b.closest('.auto-row')),
+    exitDocked: !!(b && b.parentNode && b.parentNode.id === 'fs-dock'),
+    exitOpacity: b ? Number(getComputedStyle(b).opacity) : null,
   };
 });
 
@@ -2074,6 +2129,28 @@ const fullscreenClauses = {
       barTogOn.ctrlDisplay !== 'none' &&
       !!barTogOn.rig && barTogOn.rig.h <= 641 &&
       barTogOn.label === '收起条' && barTogOn.pressed === 'true',
+  // ---- ★★★ Phase 46：全屏里「退出全屏」搬成右下角独立组件 + 两颗一起淡化（改法 B）----
+  //   佘先生 2026-10-01：「调整这个全屏UI组块的位置，把它放在显示条UI组块的上方」。
+  '★ 全屏里「退出全屏」从控制条第 2 行里搬出来了，挂进右下角那座浮件座（队列在药丸之前）':
+      !!fsClean.exit && fsClean.exit.hasDock === true && fsClean.exit.docked === true &&
+      fsClean.exit.inBar === false && fsClean.exit.probeDocked === true &&
+      (fsClean.exit.dockKids || []).join(',') === 'page-full,bar-toggle',
+  '★ 它落在右下角（离右 14px），而且**压在「条开关」的上方**：不重叠、留真间隙':
+      !!fsClean.exit && fsClean.exit.fromRight === 14 &&
+      fsClean.exit.gapToToggle !== null && fsClean.exit.gapToToggle >= 4,
+  '★ 操作条收着的时候它也在，文案已经是「退出全屏」（否则收完条就退不出全屏了）':
+      !!fsClean.exit && fsClean.exit.label === '退出全屏' && fsClean.exit.opacity > 0,
+  '★ 全屏里两颗都淡到不抢眼（opacity < 0.5）':
+      !!fsClean.exit && fsClean.exit.opacity < 0.5 && fsClean.exit.toggleOpacity < 0.5,
+  '★ 淡归淡，还是**点得着**：命中测试落在它自己身上（看不见 ≠ 点不着；findings 116）':
+      !!fsClean.exit && fsClean.exit.hitSelf === true,
+  '★ 鼠标压上去两颗都回到不透明（想用的时候它自己就亮出来）':
+      fsHoverExit > 0.9 && fsHoverToggle > 0.9,
+  '★ 鼠标离开又淡回去（不是一直亮着）':
+      typeof fsUnhover === 'number' && fsUnhover < 0.5,
+  '★ 搬过家也认得回去：退出全屏后它回到第 2 行、不再淡（普通窗口一个像素没变）':
+      !!fsOff && fsOff.exitInBar === true && fsOff.exitDocked === false &&
+      fsOff.exitOpacity === 1 && fsOff.label === '全屏',
 };
 const fullscreenBad = Object.keys(fullscreenClauses).filter((k) => !fullscreenClauses[k]);
 const fullscreenOk = fullscreenBad.length === 0;
