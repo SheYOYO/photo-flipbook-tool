@@ -24,10 +24,19 @@ const pageFlip = new St.PageFlip(bookElement, {
   width: pageWidth,
   height: pageHeight,
   size: "stretch",
+  // ★★★ Phase 44：这两个上限**够大就行，绝不能变成天花板** ★★★
+  //   库在 stretch 分支里有一句 `h > maxWidth && (h = maxWidth)` —— maxWidth 一收紧，
+  //   `html.fs-net .book-rig` 撤掉 640px 上限那件事就**白做了**：书恒 ≤ 1064×665，
+  //   净屏时四周留一圈白（真机 1280×800 全屏下两张照片只占屏 69.1%，findings 130）。
+  //   这里给到 8K 屏（7680 CSS px）也用不完的宽度 ⇒ **尺寸只剩 CSS 一个来源**：
+  //   普通窗口由 `.book-rig` 写死的 640px 上限管着（书仍是 1024×640，观感一字未变），
+  //   净屏（`.fs-net` 撤了那个上限）就顶满整个视口。
+  //   ⚠ 别指望 `maxHeight` 当第二道闸：库在 stretch 分支压根**不读**它 ——
+  //     高度是拿 `getBlockHeight()`（即容器实高）兜的。这里一并放大只为不留下误导性的数。
   minWidth: Math.max(1, Math.round(pageWidth * 0.56)),
-  maxWidth: Math.max(1, Math.round(pageWidth * 1.04)),
+  maxWidth: Math.max(1, Math.round(pageWidth * 8)),
   minHeight: Math.max(1, Math.round(pageHeight * 0.56)),
-  maxHeight: Math.max(1, Math.round(pageHeight * 1.04)),
+  maxHeight: Math.max(1, Math.round(pageHeight * 8)),
   drawShadow: true,
   flippingTime: 760,
   usePortrait: true,
@@ -1995,6 +2004,19 @@ let fsBarHover = false;
 let fsNetOn = false;          // 操作条这会儿收着没（<html>.fs-net 与它同步）
 let fsNetUserOff = false;     // ★ Phase 42：普通窗口里用户按右下角那颗开关收起来了
 let fsWasReading = false;     // 上一轮算出来在不在全屏里（用来判"刚进/刚退"）
+// ★★★ Phase 45：净屏"顶满屏幕"用的放大倍数 ★★★
+//   佘先生 2026-10-01：「允许少量裁剪，优化撤掉尺寸上限的全屏显示」。
+//   Phase 44 撤掉库那道尺寸天花板之后，书是按容器量出来的，但它**仍然按跨页比例 1.6
+//   定格**（= 2 × --page-ratio）⇒ 屏幕正好 16:10 时逐像素顶满，别的比例会在短的那一边
+//   剩一条背景（1920×1080 上左右各 96px，findings 131）。
+//   这里给 .book-rig 加一个 scale 把那条边补掉，多出来的由 .stage 裁掉 —— 代价是每条边
+//   裁掉一点照片。倍数怎么算见下面的 fsFillScale()。
+//   ⚠ 这三个常量**必须声明在这里**：applyFsNet() 会在模块加载末尾就被调用一次，
+//     声明在后面会踩暂时性死区（同一个坑 Phase 20 / 28 / 29 各踩过一次）。
+const FS_FILL_MAX_SCALE = 1.25;   // 最多放大 1.25 倍 ⇒ 每条边最多裁掉可见跨页的 10%（公式 (s-1)/(2s)）。要调"允许裁多少"只改这里
+let fsScale = 1;                  // 当前倍数（1 = 不放大，也就是本机 16:10 的常态）
+let fsRelayDrag = false;          // 手上正有一次"坐标已还原过"的拖拽
+
 
 // ★ Phase 42：浏览器外壳收走了没 —— 只认 `display-mode` 这条媒体特性。
 //   实测（findings 123/124）：真机普通窗口 false、真机 `--app=` 全屏 true；
@@ -2069,9 +2091,46 @@ function applyFsNet() {
     changed = true;
   }
   syncBarToggle();
+  applyFsFill();
   // 书是按容器尺寸算页大小的（翻页库自己监听 window resize）⇒ 版面变了就派一次让它重排
   if (changed) window.dispatchEvent(new Event("resize"));
 }
+// ---------------------------------------------------------------------------
+// ★★★ Phase 45：净屏铺满 —— 允许少量裁剪，把整本书等比放大到顶满屏幕 ★★★
+//
+// Phase 44 之后书已经是"容器量多少就摊多开"，但它**仍然按跨页比例 1.6 定格**
+// （= 2 × --page-ratio）：屏幕正好 16:10 ⇒ 逐像素顶满；别的比例就在短的那一边剩一条
+// 背景 —— 实测 1920×1080 上左右各剩 96px（findings 131）。
+//
+// 这里用**放大**把那条边补掉：.book-rig 整体 scale 到"短边也盖住"，多出来的由 .stage
+// 裁掉（overflow:hidden）。代价是每条边裁掉一点照片，所以有上限：
+//   · 本机 2560×1600（16:10）⇒ 需要 1.000 倍 ⇒ **一个像素都不裁**，老观感原样不动；
+//   · 16:9 要 1.111 倍、4:3 要 1.200 倍 ⇒ 都低于上限，完全顶满；
+//   · 更极端的比例（21:9 之类）到上限就停 —— 宁可在短边留一点，也不把照片裁狠了。
+//
+// ⚠ 只挂 .fs-net（真全屏 / 用户主动收起操作条）⇒ 普通窗口一个像素都不会变。
+// ---------------------------------------------------------------------------
+
+/** 净屏顶满屏幕需要把书放大几倍（1 = 不用放大） */
+function fsFillScale() {
+  if (!fsNetOn) return 1;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (!(vw > 0) || !(vh > 0)) return 1;
+  const spread = 2 * (pageWidth / pageHeight);   // 跨页比例（本书 1.6）
+  const ratio = vw / vh;
+  return Math.min(Math.max(ratio / spread, spread / ratio), FS_FILL_MAX_SCALE);
+}
+
+/** 把倍数落到 --fs-scale 上；CSS 那边只管用，不自己算 */
+function applyFsFill() {
+  const next = fsFillScale();
+  if (Math.abs(next - fsScale) < 0.0005) return;   // 没变就别写，省一次样式失效
+  fsScale = next;
+  document.documentElement.style.setProperty("--fs-scale", next.toFixed(4));
+  fsRelayDrag = false;                             // 倍数换了，手上那次拖拽别再续着
+}
+
 
 /**
  * 进/退全屏都收敛到这一条。
@@ -2151,6 +2210,62 @@ if (fsDisplayQuery.addEventListener) {
 window.addEventListener("resize", syncFsReading);
 syncFsReading();                    // 命令行拉起的全屏窗口，一进来就是净屏的
 
+// ---------------------------------------------------------------------------
+// ★★★ Phase 45：放大之后，得把鼠标坐标"还原"回去 ★★★
+//
+// 翻页库换算鼠标位置靠的是 `.stf__block.getBoundingClientRect()`（vendor 里的
+// getMousePos：x = clientX - rect.left）。祖先一放大，它量到的矩形跟着放大，
+// 于是它以为的坐标 = 真实坐标 × s ⇒ 翻页判定的"中线"整条往左偏、拖拽跟手会跑快。
+// 实测：1920×1080 上 s = 1.111，中线左偏 96px（屏幕宽度的 5%）。
+//
+// 做法：在**捕获阶段**截下来，按"矩形左/上边不动、把偏移量除回去"还原坐标，再原样
+// 转发一个同类型事件给库；原事件 stopPropagation，免得库算两遍（mouseup 算两遍，
+// 第二遍会拿错的那一份去翻页）。
+//
+// ⚠ 只截 mousedown / mousemove / mouseup —— 本脚本自己一个都不用这三个
+//   （书上是 pointerdown、双击是 dblclick、按钮是 click），所以拦掉不伤自己。
+//   vendor 还监听 touchstart/move/end，触屏那条路没做还原（本工具是桌面端）。
+// ⚠ s === 1（本机 16:10 就是）时整个函数第一行就返回，等于不存在；
+//   普通窗口更进不来（fsScale 恒为 1）。
+// ---------------------------------------------------------------------------
+const fsRelayTypes = ["mousedown", "mousemove", "mouseup"];
+let fsRelaying = false;
+
+function fsRelay(event) {
+  if (fsRelaying || !(fsScale > 1.0005) || event.button !== 0) return;
+  const block = document.querySelector(".stf__block");
+  if (!block || !(event.target instanceof Element)) return;
+  const rect = block.getBoundingClientRect();
+  if (!(rect.width > 0)) return;
+  const inside = event.clientX >= rect.left && event.clientX <= rect.right
+    && event.clientY >= rect.top && event.clientY <= rect.bottom;
+  if (event.type === "mousedown") {
+    if (!inside) return;
+    fsRelayDrag = true;
+  } else if (event.type === "mousemove") {
+    if (!inside && !fsRelayDrag) return;          // 拖拽出了画面也继续跟着还原
+  } else {
+    if (!fsRelayDrag) return;
+    fsRelayDrag = false;
+  }
+  const target = event.target;
+  const clientX = rect.left + (event.clientX - rect.left) / fsScale;
+  const clientY = rect.top + (event.clientY - rect.top) / fsScale;
+  event.stopPropagation();
+  fsRelaying = true;
+  try {
+    target.dispatchEvent(new MouseEvent(event.type, {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: clientX, clientY: clientY,
+      button: event.button, buttons: event.buttons, detail: event.detail,
+      screenX: event.screenX, screenY: event.screenY,
+    }));
+  } finally {
+    fsRelaying = false;
+  }
+}
+for (const type of fsRelayTypes) window.addEventListener(type, fsRelay, true);
+
 Object.assign(window.__full, {
   clean: () => fsReadingMode(),        // 该不该净屏阅读
   displayFs: fsDisplayFullscreen,      // 浏览器外壳收走了没（F11 那条路的判据）
@@ -2161,4 +2276,5 @@ Object.assign(window.__full, {
   toggleBar: () => barToggle.click(),
   hasBarToggle: () => Boolean(document.getElementById("bar-toggle")),
   idleMs: FS_BAR_IDLE_MS,
+  scale: () => fsScale,                  // 净屏放大倍数（探针用）
 });

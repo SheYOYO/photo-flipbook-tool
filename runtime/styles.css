@@ -549,11 +549,15 @@ a:focus-visible, button:focus-visible { outline: 2px solid #6b735d; outline-offs
    ⚠ 本文件受上游契约约束：全文不许出现被禁的字面量（见 html-contract.test.mjs），
      注释里也不行。 */
 html.fs-net .controls { display: none; }
-html.fs-net .stage { padding: 0; }
+html.fs-net .stage { padding: 0; overflow: hidden; }
 html.fs-net .book-rig {
   /* 去掉 640px 上限：高度吃掉这一席位的全部，宽度由页面比例推出来 */
   width: min(100%, calc(100cqh * var(--page-ratio) * 2));
   height: 100cqh;
+  /* ★ Phase 45：净屏时把整本书等比放大到顶满屏幕（倍数由 flipbook.js 算）。
+     放大后会在四边溢出，由 .stage 的 overflow:hidden 裁掉 —— 这就是"允许的那点裁剪"。
+     倍数 = 1（本机 16:10）时这一行等于没写，普通窗口更是完全走不到这里。 */
+  transform: scale(var(--fs-scale, 1));
 }
 /* 画册顶到屏幕边了，那圈投影会被裁掉半截 ⇒ 干脆不画（顺带省一次大范围合成）*/
 html.fs-net .book { filter: none; }
