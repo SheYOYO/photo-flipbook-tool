@@ -1,0 +1,9 @@
+# Android 工程生成物（不入库）
+*.iml
+.gradle/
+local.properties
+.idea/
+captures/
+.externalNativeBuild/
+**/build/
+**/.cxx/

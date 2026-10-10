@@ -1,0 +1,1368 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>跨页预览</title>
+<!--
+  跨页预览（M4b）—— 工作台右边那一栏。
+
+  ★ 这里跑的就是**链② 那四颗 JS 引擎**（probe / rules / template / artwork），
+    与电脑端逐字节对账过（B2/B3/B4）。界面换成 Compose 之后，**算法一个字没改** ——
+    这正是"工作台原生 + 书页/算法仍用同一份 JS"那个决策的落地。
+
+  ★ 结构为什么必须是这三层（body.stage > .book-rig > .book > .art-page）
+    书页的 `.art-page` 是 `aspect-ratio` 定高的，而 **`aspect-ratio` 是 Chrome 88+ 才有的**
+    （测试机 Chrome 83 实测 `CSS.supports('aspect-ratio','1/1') === false`）。
+    成品书真正靠的是 `.book-rig { height: min(100cqh, 640px) }`，而 `100cqh` 来自
+    `.stage { container-type: size }` —— **这条链不依赖 aspect-ratio**。
+    ⇒ 少任何一层，高度就是 0、用户看到的是一片空白。（我在 M2 上栽过两次，正解就在旧工程 bridge.js 里。）
+-->
+<link rel="stylesheet" href="/books/book1/styles.css">
+<style>
+  /* ⚠ 书页那套 styles.css 是给"成品书的 body 结构"写的，引进来会连带把 html/body 的高度带偏
+     （实测 `html` 被带成 **0px** ⇒ `body{height:100%}` 也是 0 ⇒ compat.js 量到 availH=8px
+      ⇒ 它算出来 `width:0;height:0` ⇒ 用户看到一片空白。我在这一层栽了两轮）。
+     ⇒ ★ 用 **`100vh`/`100vw`** 而不靠百分比：vh 不依赖父级高度，老内核也认
+        （compat.js 给 `.room` 做退路时用的就是 `100vh`，同一个道理）。 */
+  /* ★ 第八轮③（2026-10-08）：预览区底色跟着成品书一起换成 **B 浅橡木磨砂**，
+     两边必须同色 —— 否则「预览里是米白、真书里是木桌」，一眼就出戏。
+     与壳 `_shell/layout.js` 第 21) 条**同一套参数**（改一处必须同步另一处）。
+     ⚠ 真机 Chrome 83：不碰 `inset`(87+)/`aspect-ratio`(88+)，这里都没用到。 */
+  html, body { margin: 0; padding: 0; overflow: hidden;
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)'/%3E%3C/svg%3E"),
+      radial-gradient(120% 90% at 50% -10%, rgb(255 248 230 / .35), transparent 60%),
+      repeating-linear-gradient(93deg,
+        rgb(0 0 0 / .04) 0 2px, transparent 2px 8px,
+        rgb(255 255 255 / .06) 8px 10px, transparent 10px 24px),
+      radial-gradient(36% 24% at 26% 70%, rgb(120 84 44 / .22), transparent 70%),
+      linear-gradient(160deg, #d8b183, #c39a67 58%, #b1895a);
+    background-blend-mode: overlay, normal, normal, normal, normal;
+    background-repeat: repeat, no-repeat, repeat, no-repeat, no-repeat;
+  }
+  html { height: 100vh !important; }
+  body.stage { display: block; height: 100vh !important; width: 100vw !important;
+               min-height: 0 !important; max-height: none !important; }
+  #status { position: fixed; left: 10px; bottom: 8px; z-index: 9;
+            font: 12px/1.5 -apple-system, "Microsoft YaHei", sans-serif;
+            color: #8f8f85; pointer-events: none; }
+  #status.bad { color: #b3261e; }
+
+  /* ★ 预览页**没有翻页库**（page-flip），而平时 `.book` / `.art-page` 的尺寸正是库给的
+     ⇒ 不补的话它们都是 0×0（真机实测：`.book-rig` 395×287 有了，`.book`/`.art-page` 还是 0
+     ⇒ 预览区一片空白）。这里按成品书实测的几何补上：
+     `.book` 撑满 rig；`.art-page` 占**跨页的一半宽**（成品书实测 rig 576×360 ⇒ 单页 288×360）。 */
+  .book-rig > .book { display: block !important; width: 100% !important; height: 100% !important; }
+  .book > .art-page { position: relative !important; width: 50% !important; height: 100% !important; }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     ★★ 第十五轮（2026-10-09）：**只画封面**模式（`?cover=1`，给竖屏封面编辑页用）
+
+     为什么要它：封面编辑页要的是"封面图占据屏幕大部分"，而本页平时画的是
+     **跨页**（`.art-page` 各占一半宽）⇒ 封面只占中间一半，太小。
+     这里用 `html.pv-cover-only` 一个开关把它变成**单页**。
+
+     ⚠ 尺寸**不在这里定**：`.book-rig` 的宽高由 compat.js 用 inline `!important` 写死，
+       样式表里的 `!important` 压不过 inline（层叠规则）。所以单页几何在 compat.js 里算，
+       这里只管"页怎么排"。两边**同一个开关**，不会各说各话。
+     ⚠ 居中：本页 `body.stage` 被自己的样式改成了 `display:block`（`.stage` 的
+       `place-items:center` 就失效了）⇒ 平时书是**贴左上角**的。单页模式下让它回到
+       grid 居中 —— 封面编辑页的封面应该居中。
+     ══════════════════════════════════════════════════════════════════════════ */
+  html.pv-cover-only body.stage { display: grid !important; place-items: center !important; }
+  html.pv-cover-only .book > .art-page { width: 100% !important; }
+  /* 左下角那句「第 N / M 页」是给**跨页预览**报进度的；封面编辑页**锁在第 1 页**，
+     它只会挡在木桌上当噪声（真机截图里就压着"第 1 / 6 页"）⇒ 这个模式下不画。 */
+  html.pv-cover-only #status { display: none !important; }
+</style>
+<script>
+  /* ★ 第十五轮：`?cover=1` ⇒ 只画封面（详见上面那段注释）。
+     ⚠ 必须**在 compat.js 之前**打标记：compat 一上来就按"单页"算尺寸，
+       晚一步会先按跨页算一次（进页面会闪一下）。 */
+  try {
+    if (/[?&]cover=1(&|$)/.test(location.search)) {
+      document.documentElement.classList.add('pv-cover-only');
+    }
+  } catch (e) { /* 忽略 */ }
+</script>
+</head>
+<body class="stage">
+
+  <div class="book-rig"><div class="book" id="book"></div></div>
+  <div id="status">正在准备…</div>
+
+<script src="probe.js"></script>
+<script src="rules.js"></script>
+<script src="template.js"></script>
+<script src="artwork.js"></script>
+<!--
+  ★★ 必须引入壳层的版式补丁（compat.js）—— 这是"书页在手机上能看"的救命机制。
+     它做的事：`.book-rig { height: min(100cqh, 640px) }` 里的 **`100cqh` 老内核不认**
+     （`container-type` / `cqh` 是 Chrome 105+ 的），整条声明会被丢弃 ⇒ 高度 0 ⇒ 一片空白。
+     compat.js 改成**实量 `.stage` 的可用空间**、用 JS 算出来再以内联样式写回 `.book-rig`。
+     它自带判断：新内核（认识 1cqh）直接 return，一个像素都不动。
+  ⚠ 它只在页面加载后的几个时间点跑（DOMContentLoaded / 400ms / 1200ms / resize）
+    ⇒ 我们**渲染完一页之后要再派发一次 `resize`**，否则它量的是"还没有内容"的空壳。
+-->
+<script src="/shell/cqwfix.js"></script>
+<script src="/shell/compat.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var PR = window.__engineProbe, RU = window.__engineRules,
+      AW = window.__engineArtwork, TP = window.__engineTemplate;
+
+  var bookEl = document.getElementById('book');
+  var statusEl = document.getElementById('status');
+
+  var state = { pages: [], photos: [], payload: null, index: 0, bad: 0,
+                autoPlates: {}, autoPos: {} };
+
+  /* 版面档位（M4c）——
+   * 引擎 `assignPlates()` 会按清晰度名次自动定档，用户在界面上还能**逐张改**。
+   * 改完只重排页序（`buildPageSequence`）**不重新探测** ⇒ 点一下立刻见效。
+   *
+   * ⚠ `position` 线上一律用 `center` 表示"居中"，而不是空串：
+   *   空串在 JS 参数里跟"没给这个参数"分不开（`if (position)` 直接为假）。
+   *   真正的空串（引擎里的语义）由 `POS_MAP` 在最后一刻转。 */
+  var PLATES = { small: 1, medium: 1, large: 1, portrait: 1 };
+  var POS_MAP = { center: '', high: 'high', low: 'low', aside: 'aside' };
+
+  function findPhoto(order) {
+    for (var i = 0; i < state.photos.length; i++) {
+      if (state.photos[i].order === order) { return state.photos[i]; }
+    }
+    return null;
+  }
+
+  /** 把引擎刚算完的自动档位记下来 —— 用户点「恢复自动」时要回到这一版。 */
+  function recordAuto() {
+    state.autoPlates = {};
+    state.autoPos = {};
+    for (var i = 0; i < state.photos.length; i++) {
+      var p = state.photos[i];
+      state.autoPlates[p.order] = p.plate;
+      state.autoPos[p.order] = p.position;
+    }
+  }
+
+  /** 把 Kotlin 传来的"用户改过的档位"盖上去（**必须在 assignPlates 之后**，
+   *  否则会被第 ②/④ 步的名次分档重新算掉 —— 桌面端也是这个顺序）。 */
+  function applyOverrides() {
+    var list = (state.payload && state.payload.photos) || [];
+    for (var i = 0; i < list.length; i++) {
+      var src = list[i], p = findPhoto(src.order);
+      if (!p) { continue; }
+      if (src.plate && PLATES[src.plate]) { p.plate = src.plate; }
+      if (src.position) {
+        p.position = Object.prototype.hasOwnProperty.call(POS_MAP, src.position)
+          ? POS_MAP[src.position] : '';
+      }
+    }
+  }
+
+  /** 重排页序（封面 → 每张一页 → 版权页 → 封底）并夹住当前页码。 */
+  function buildPages() {
+    state.pages = RU.buildPageSequence(state.photos);
+    if (state.pages.length) {
+      state.pages[0].cover_photo = state.photos[0];
+      if (state.pages[0].kind === 'frontcover') { state.pages[0].photo = state.photos[0]; }
+    }
+    if (state.index > state.pages.length - 1) {
+      state.index = Math.max(0, state.pages.length - 1);
+    }
+  }
+
+  /** 只重画，不重新探测（改档位走这条快路）。 */
+  function reflow() {
+    buildPages();
+    showPage();
+  }
+
+  /**
+   * ★ 第十五轮：本页是不是**只画封面**模式（竖屏封面编辑页用 `?cover=1` 打开）。
+   *
+   * 标记打在 `<html>` 上的 `pv-cover-only`（见 `<head>` 里那段小脚本）。判断点分散在
+   * 三处：① 翻页三个入口锁死在第 1 页 ② compat.js 按**单页**比例算尺寸
+   * ③ 本页样式表把 `.art-page` 从 50% 宽改成 100%。
+   * ⚠ 三处**只用这一个开关**，别再各自加参数 —— 否则会出现"页排单页、尺寸按跨页"的半开态。
+   */
+  function coverOnlyMode() {
+    try { return document.documentElement.classList.contains('pv-cover-only'); }
+    catch (e) { return false; }
+  }
+
+  /**
+   * ★★ 把 html/body 的尺寸**用 JS 钉死**（实量视口 ⇒ 内联 `!important`）。
+   *
+   * 为什么非这样不可（我在这一层栽了两轮，过程记下来免得后人再踩）：
+   *   这个页面引了书页那套 `styles.css`，而它里面有一条带 `!important` 的规则在压 body 高度
+   *   ⇒ `body` 的 computed height 一直是 **8px**（= 内容高），连普通的 `height` 声明都不生效。
+   *   后果是连锁的：`compat.js` 量到 `availH = body.clientHeight = 8` ⇒ 它算出来
+   *   `width:0 !important; height:0 !important` 写回 `.book-rig` ⇒ **用户看到一片空白**。
+   *
+   *   CSS 侧试过 `height:100%` / `height:100vh` / `!important`，都被压回去；
+   *   而**带 `!important` 的内联样式能压过一切**（CDP 实测：设上去 computed 立刻变 287）。
+   *   ⇒ 那就别跟 CSS 优先级纠缠了，直接实量视口写内联，最直白也最可控。
+   */
+  function fixStageSize() {
+    try {
+      var h = window.innerHeight, w = window.innerWidth;
+      var de = document.documentElement, bd = document.body;
+      de.style.setProperty('height', h + 'px', 'important');
+      bd.style.setProperty('height', h + 'px', 'important');
+      bd.style.setProperty('width', w + 'px', 'important');
+      bd.style.setProperty('margin', '0', 'important');
+      bd.style.setProperty('padding', '0', 'important');
+    } catch (e) { /* 不影响渲染 */ }
+  }
+  fixStageSize();
+  window.addEventListener('resize', fixStageSize);
+
+  function say(t, bad) {
+    if (!statusEl) { return; }
+    statusEl.textContent = t || '';
+    statusEl.className = bad ? 'bad' : '';
+  }
+
+  /** 用 canvas 把一张图读成 RGB 像素 —— 引擎（probe）要的就是这个。
+   *  ⚠ 大图一次性 getImageData 很吃内存，所以**逐张处理、用完立刻把 canvas 归零**。 */
+  function decodeRGB(url) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+          var cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          var ctx = cv.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          var d = ctx.getImageData(0, 0, w, h).data;
+          var rgb = new Uint8Array(w * h * 3), j = 0, k;
+          for (k = 0; k < d.length; k += 4) {
+            rgb[j++] = d[k]; rgb[j++] = d[k + 1]; rgb[j++] = d[k + 2];
+          }
+          cv.width = 0; cv.height = 0;
+          resolve({ w: w, h: h, rgb: rgb });
+        } catch (e) { reject(e); }
+      };
+      img.onerror = function () { reject(new Error('这张读不出来：' + url)); };
+      img.src = url;
+    });
+  }
+
+  /** 把当前这一页画出来（用引擎的模板）。 */
+  function showPage() {
+    var pages = state.pages, pay = state.payload || {};
+    if (!pages.length) { return; }
+    var k = Math.max(0, Math.min(state.index, pages.length - 1));
+    state.index = k;
+    var body;
+    try {
+      /* ★ 2026-10-08（第六轮）：页脚文字**可以被覆盖**。
+       *   引擎的 `pageHtml(..., photoCount, coverText)` 内部把页脚写成
+       *   `photoCount + ' PHOTOGRAPHS'` —— 它是**引擎现算的**，所以
+       *   `normalizeCoverText` 的 `text` 字段对内置三处**不生效**（只对 extras 生效）。
+       *   佘先生要求「除了页数，其他文字都能调整」⇒ 这里把**页脚那一行整段换掉**。
+       *   ⚠ 换法必须**在渲染出来之后、只动那一个节点**，不能改引擎（一字不许改）。
+       *   ⚠ 没设 `footText`（或设成空）⇒ **保持引擎原样**，一个字都不动。 */
+      body = TP.pageHtml(pages[k], pay.title || '', pay.subtitle || '',
+                         state.photos.length, pay.coverText || {});
+      if (pay.footText) {
+        body = replaceFootText(body, pay.footText);
+      }
+    } catch (e) {
+      body = '<div style="padding:30px;color:#b3261e;font:13px/1.6 sans-serif">'
+           + '这一页渲染失败：' + (e && e.message ? e.message : e) + '</div>';
+    }
+    bookEl.innerHTML = body;
+    bindCoverPick();
+    /* ★ 第七轮：innerHTML 重建后把「正在发亮的那一个」重新点亮
+     *   （状态在 state 里，不重画就会丢）。 */
+    if (state.activeCt) { markActiveExtra(state.activeCt); }
+    // ★ 内容换了 ⇒ 先把舞台尺寸钉回来，再让 compat.js 重新量、把书尺寸写回 `.book-rig`
+    //   （它监听 resize；不派发的话它量到的还是"空壳"，书高依旧是 0）
+    fixStageSize();
+    try { window.dispatchEvent(new Event('resize')); } catch (e) { /* 忽略 */ }
+    say('第 ' + (k + 1) + ' / ' + pages.length + ' 页'
+        + (state.bad ? '（' + state.bad + ' 张读不出来）' : ''));
+  }
+
+  /**
+   * ★ 2026-10-08（第六轮）：把封面页脚那一行的**文字**换掉（样式/位置一概不动）。
+   *
+   * 为什么用正则改字符串、而不是 `querySelector` 改 DOM：
+   *   `showPage()` 每次都重建 `bookEl.innerHTML`，事后改 DOM 会在**翻页后丢**；
+   *   而用户可能停在封面上继续编辑 ⇒ 必须让改动**跟着下一次渲染一起走**。
+   * ⚠ 只认 `class="cover-foot"` 且**恰好一个**；命中不到就**原样返回**（绝不猜、绝不吞）。
+   * ⚠ `$` 之类字符在替换串里有特殊含义 ⇒ 用函数形式（`function(){return text;}`）。
+   */
+  function replaceFootText(html, text) {
+    var re = /(<p class="cover-foot"[^>]*>)([\s\S]*?)(<\/p>)/;
+    if (!re.test(html)) { return html; }
+    return html.replace(re, function (m, open, old, close) {
+      return open + escapeHtml(String(text)) + close;
+    });
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  /**
+   * ★ 2026-10-08（第六轮）：**点封面上的哪处文字，工作台就选中哪处**。
+   *
+   * 引擎输出的三处内置文字 + 用户自加的文字框都带得住身份：
+   *   `.cover-title` → 'title' ｜ `.cover-subtitle` → 'subtitle'
+   *   `.cover-foot` → 'foot' ｜ `.cover-extra[data-ct=xN]` → 'xN'
+   * ⇒ 只需从 class / data 属性反查身份，回报给 Kotlin（`__previewHit`）。
+   *
+   * ⚠ 用**事件委托**挂在 `bookEl` 上（不是逐个元素）—— 因为 innerHTML 每次都重建，
+   *   逐个绑会在第二次 `showPage()` 后全部失效。
+   * ⚠ 回报**同时**留一份在 `window.__lastCoverPick`，让 CDP 验收脚本读得到
+   *   （F128 同款：Android 回调链路慢，脚本读 window 最稳）。
+   */
+  var coverPickBound = false;
+  /**
+   * ★ 2026-10-08（第七轮，第⑤条）：封面文字框要有一圈**醒目的矩形边界**。
+   *
+   * ⚠⚠ **只在工作台预览里画，出书后的成品书上不画** ——
+   *   佘先生定的是「只在工作台预览里显示」。做法：这段 CSS 只由 `preview.html` 注入，
+   *   而成品书走的是 `books/book1/` 那一套静态文件，**它压根加载不到这段样式**。
+   *   ⇒ 结构上就不可能漏到成品书上，不需要"出书前再撤一次"那种易漏的做法。
+   *
+   * ⚠ 用 `outline` 而不是 `border`：border 会**占掉盒模型的高度**，
+   *   而文字框的定位与高度是引擎用 `position:absolute` + 行内样式算好的
+   *   ⇒ 一加 border，每个框的位置都会偏一点（"边界一加字就跳"）。
+   *   outline 不参与布局，纯装饰。
+   */
+  var EDIT_CSS_ID = 'preview-cover-edit';
+  function injectEditCss() {
+    if (document.getElementById(EDIT_CSS_ID)) { return; }
+    var st = document.createElement('style');
+    st.id = EDIT_CSS_ID;
+    st.textContent = [
+      /* ★★ 第十八轮（他要求「标题和副标题和页脚在选中的状态下都要有矩形框」）：
+       *   未选中一律画**细虚线框**（他选的样式）—— 原来只有 `.cover-extra` 有，
+       *   标题/副标题/页脚连「这里有一块文字」都看不出来。 */
+      '.cover-extra, .cover-title, .cover-subtitle, .cover-foot {',
+      '  outline: 1px dashed rgba(70, 120, 220, 0.55) !important;',
+      '  outline-offset: 2px !important;',
+      '}',
+      /* 选中那一块⇒ 实线加粗。两类样式要能一眼分开。
+       *
+       * ⚠⚠★本轮真机实测撞出的红（不是脚本问题，是产品侧真缺陷）：
+       *   最早把 `.ct-active` 的 `box-shadow` + **无限循环动画** 一起扩到内置三处时，
+       *   真机上连按 N 次字号就把 WebView **渲染进程打清了**
+       *   （`logcat -b crash`：`Fatal signal 5 (SIGTRAP)` + backtrace 全在 `libmonochrome.so`
+       *   张扇掉出 WebView DevTools 连接）—— 那三个是 `<h2>/<p>`，在簽约的
+       *   3D `transform` 缩放的书页里，反复重启动画会把 Skia 合成层压翻。
+       * ⇒ **回滚动画，只留静态边框**（他要的只是「看得出选中了」，不需要闪）。 */
+      '.cover-extra.ct-active {',
+      '  outline: 2.5px solid #1a73e8 !important;',
+      '  outline-offset: 3px !important;',
+      '  background: rgba(26, 115, 232, 0.14) !important;',
+      '}',
+      '.cover-title.ct-active,',
+      '.cover-subtitle.ct-active,',
+      '.cover-foot.ct-active {',
+      '  outline: 2.5px solid #1a73e8 !important;',
+      '  outline-offset: 3px !important;',
+      '}',
+    ].join('\n');
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  /**
+   * ★ 第七轮：给某一个文字框加/去「选中发亮」态。
+   * ⚠ 状态存在 `state.activeCt` 里（跟着 state 走）⇒ 翻页重建后仍正确。
+   */
+  function markActiveExtra(id) {
+    state.activeCt = (id || null);
+    /* ★★ 第十八轮（他要求「标题和副标题和页脚在选中的状态下都要有矩形框」）：
+     *   原来这里**只管** `.cover-extra`（用户自加的文字框）⇒ 内置三处
+     *   （title/subtitle/foot）被显式排除在外（连点它们都会 `markActiveExtra(null)`）。
+     *   那正好就是他看到的"标题/副标题/页脚选中时没有框"。
+     *   ⚠ 一视同仁：四类元素都用**同一套** `.ct-active` ⇒ 视觉语言一致，也不用改引擎。
+     */
+    var ls = bookEl.querySelectorAll('.cover-extra, .cover-title, .cover-subtitle, .cover-foot');
+    for (var i = 0; i < ls.length; i++) {
+      var ct = ls[i].getAttribute('data-ct');
+      /* 内置三处没有 `data-ct`，用 class 反查它的 key（title/subtitle/foot）。 */
+      if (!ct) {
+        var cls = String(ls[i].className || '');
+        if (/\bcover-title\b/.test(cls)) { ct = 'title'; }
+        else if (/\bcover-subtitle\b/.test(cls)) { ct = 'subtitle'; }
+        else if (/\bcover-foot\b/.test(cls)) { ct = 'foot'; }
+      }
+      if (state.activeCt && ct === state.activeCt) { ls[i].classList.add('ct-active'); }
+      else { ls[i].classList.remove('ct-active'); }
+    }
+  }
+
+  function bindCoverPick() {
+    if (coverPickBound || !bookEl) { return; }
+    coverPickBound = true;
+    injectEditCss();
+    bookEl.addEventListener('click', function (e) {
+      var t = e.target;
+      if (!t || t.nodeType !== 1 || !t.className) { return; }
+      var cls = String(t.className);
+      var id = null;
+      if (/\bcover-title\b/.test(cls)) { id = 'title'; }
+      else if (/\bcover-subtitle\b/.test(cls)) { id = 'subtitle'; }
+      else if (/\bcover-foot\b/.test(cls)) { id = 'foot'; }
+      else if (/\bcover-extra\b/.test(cls)) {
+        var ct = t.getAttribute('data-ct');
+        if (ct) { id = ct; }
+      }
+      if (!id) { return; }
+      e.preventDefault();
+      e.stopPropagation();
+      /* ★ 第七轮：点了文字框就把它标成"选中发亮"（配合两段式删除）。
+       * ⚠★ 第十八轮修：原来 `else { markActiveExtra(null) }` —— 点内置三处反而**把选中清掉**，
+       *   这就是"标题/副标题/页脚选中时没有矩形框"的直接原因。
+       *   ⇒ 四类元素一视同仁：点谁就选中谁。
+       */
+      markActiveExtra(id);
+      reportCoverPick(id);
+    }, true);
+  }
+
+  function reportCoverPick(id) {
+    var box = { el: id, text: '' };
+    try {
+      var e2 = bookEl.querySelector(id === 'title' ? '.cover-title'
+                      : id === 'subtitle' ? '.cover-subtitle'
+                      : id === 'foot' ? '.cover-foot' : '.cover-extra[data-ct="' + id + '"]');
+      if (e2) { box.text = (e2.textContent || '').trim(); }
+    } catch (e3) { /* 找不到就只报身份 */ }
+    try { window.__lastCoverPick = box; } catch (e4) { /* 忽略 */ }
+    try {
+      if (window.PreviewBridge && window.PreviewBridge.onCoverPick) {
+        window.PreviewBridge.onCoverPick(JSON.stringify(box));
+      }
+    } catch (e5) { /* 桥没挂上也不该崩 */ }
+  }
+
+  function report(obj) {
+    // ★ 留一份在 window 上 —— 验收脚本（CDP）读得到，比"等 Android 那边的回调"稳
+    try { window.__lastReport = obj; } catch (e) { /* 忽略 */ }
+    try { if (obj && obj.publish) { window.__lastPub = obj.publish; } } catch (e) { /* 忽略 */ }
+    try {
+      if (window.PreviewBridge && window.PreviewBridge.onPlan) {
+        window.PreviewBridge.onPlan(JSON.stringify(obj));
+      }
+    } catch (e) { /* 桥没挂上也不该崩 */ }
+  }
+
+  /**
+   * 主入口：Kotlin 把照片清单丢进来，这里跑引擎、渲染第一页。
+   * payload = { photos: [{order, name, url}], title, subtitle, coverText }
+   */
+  function render(payload) {
+    state.payload = payload || {};
+    /* ★ 2026-10-08（第六轮）：`render()` 是**整包替换** state.payload，
+     *   而工作台那条重算 `LaunchedEffect`（拖拽排序 / 改档位后）会重新 render
+     *   ⇒ 不保住 `footText` 的话，**用户改过的页脚会被悄悄还原**。
+     *   ⇒ 换页/重渲染前后都把它带过去。 */
+    if (state.lastFootText) { state.payload.footText = state.lastFootText; }
+    var list = (payload && payload.photos) || [];
+    state.bad = 0;
+    if (!list.length) {
+      state.pages = []; state.photos = [];
+      bookEl.innerHTML = '<div style="padding:0 30px;text-align:center;color:#9a9a90;'
+        + 'font:13px/1.8 -apple-system,\'Microsoft YaHei\',sans-serif">'
+        + '还没有照片<br>点上面「选照片」从相册里选</div>';
+      say('');
+      report({ ok: true, photos: 0, pages: 0, empty: true });
+      return;
+    }
+    var photos = [], i = 0;
+    say('正在读照片 0 / ' + list.length);
+
+    function step() {
+      if (i >= list.length) { finish(photos); return; }
+      var p = list[i];
+      decodeRGB(p.url).then(function (got) {
+        try {
+          var f = PR.probe(got.rgb, got.w, got.h);
+          photos.push({
+            order: p.order, name: p.name, path: p.url,
+            width: got.w, height: got.h,
+            orientation: RU.orientationOf(got.w, got.h),
+            plate: null, position: null,
+            mean_lum: f.mean_lum, warmth: f.warmth, sharpness: f.sharpness
+          });
+        } catch (e) { state.bad++; }
+        i++; say('正在读照片 ' + i + ' / ' + list.length);
+        setTimeout(step, 0);                 // 让出一帧，界面不至于假死
+      }, function () {
+        state.bad++; i++; setTimeout(step, 0);
+      });
+    }
+
+    function finish(photos) {
+      if (!photos.length) {
+        bookEl.innerHTML = '<div style="padding:30px;color:#b3261e;font:13px/1.6 sans-serif">'
+          + '这些照片都读不出来</div>';
+        say('照片都读不出来', true);
+        report({ ok: false, error: '全部读不出来', photos: 0, pages: 0 });
+        return;
+      }
+      try {
+        // ★ 引擎调用顺序**照抄链①**：probe → assignPlates → buildPageSequence
+        //   ⚠ 用户改过的档位要在 `assignPlates` **之后**盖上去 ——
+        //     引擎第 ②/④ 步会按名次重新分档，先盖就被冲掉了。
+        RU.assignPlates(photos);
+        photos.forEach(function (p) {
+          var stem = AW.sanitizeStem(String(p.name).replace(/\.[^.]+$/, ''));
+          var a = AW.artworkOf(p.order, stem, p.width, p.height);
+          p.stem = stem;
+          p.artwork = p.path;                       // 预览直接用原图（不出缩略图，快）
+          p.artwork_width = a.artwork_width;
+          p.artwork_height = a.artwork_height;
+        });
+        state.photos = photos;
+        recordAuto();                               // 记下"自动档位"，供「恢复自动」用
+        applyOverrides();                           // 再盖上用户改过的
+        state.index = 0;
+        buildPages();
+        showPage();
+        report({
+          ok: true, photos: photos.length, pages: state.pages.length, bad: state.bad,
+          firstKind: state.pages.length ? String(state.pages[0].kind || '') : '',
+          plates: platesOf()
+        });
+      } catch (e) {
+        say('排版失败：' + (e && e.message ? e.message : e), true);
+        report({ ok: false, error: String((e && e.message) || e), photos: photos.length, pages: 0 });
+      }
+    }
+
+    step();
+  }
+
+  /** 当前每张的档位（给验收用：`序号:档位[.位置]`，空格分隔）。 */
+  function platesOf() {
+    var out = [];
+    for (var i = 0; i < state.photos.length; i++) {
+      var p = state.photos[i];
+      out.push(p.order + ':' + p.plate + (p.position ? '.' + p.position : ''));
+    }
+    return out.join(' ');
+  }
+
+  /** 当前这一页的图版 class（验收判据：改档位/位置，它会变）。 */
+  function figureClass() {
+    var f = document.querySelector('#book figure');
+    return f ? String(f.className || '') : '';
+  }
+
+  /** 这一页的 `<article>` class（验收判据：封面/图版/留白 一眼可辨）。 */
+  function articleClass() {
+    var a = document.querySelector('#book .art-page');
+    return a ? String(a.className || '') : '';
+  }
+
+  // ==========================================================================
+  // 出书（M5）—— 与电脑端链① 同一份模板，交给 Kotlin 落盘
+  // ==========================================================================
+
+  /** 照 `book1/book-plan.json` 的字段名写 —— `BookStore.read()` 靠它取书名与封面。 */
+  function buildBookPlan() {
+    var ph = state.photos || [], out = [], i;
+    for (i = 0; i < ph.length; i++) {
+      var p = ph[i];
+      out.push({
+        order: p.order,
+        file: p.name,
+        artwork: p.artwork,
+        plate: p.plate,
+        position: p.position || '',
+        orientation: p.orientation,
+        size: [p.width, p.height],
+        exif_orientation: 1,
+        mean_lum: Math.round(p.mean_lum * 10) / 10,
+        sharpness: Math.round(p.sharpness * 10000) / 10000,
+        taken_at: null
+      });
+    }
+    var pay = state.payload || {};
+    return {
+      title: pay.title || '',
+      subtitle: pay.subtitle || '',
+      generated_at: new Date().toISOString(),
+      source_dir: '手机工作台',
+      photo_count: ph.length,
+      page_count: (state.pages || []).length,
+      cover_text: pay.coverText || {},
+      photos: out
+    };
+  }
+
+  /** 把一张原始图按 artwork 尺寸画进 canvas，导成 Q86 JPEG（与电脑端一致）。 */
+  function makeArtwork(url, w, h) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () {
+        try {
+          var cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          var d = cv.toDataURL('image/jpeg', 0.86);
+          cv.width = 0; cv.height = 0;
+          resolve(d);
+        } catch (e) { reject(e); }
+      };
+      img.onerror = function () { reject(new Error(url)); };
+      img.src = url;
+    });
+  }
+
+  /**
+   * 出书主流程。Kotlin 侧要挂 `window.BookBridge`：
+   *   `publishBook(dirId, html, planJson) -> 书目录绝对路径`（失败给空串）
+   *   `addBookPhoto(dirPath, fileName, dataUrl) -> 是否写成`
+   *   `progress(text)`（可选，用于界面提示）
+   */
+  function publish() {
+    if (!state.photos.length) { return 'empty'; }
+    var sh = window.BookBridge;
+    if (!sh || !sh.publishBook) {
+      report({ ok: false, error: '这个版本没带出书能力' });
+      return 'no-bridge';
+    }
+
+    // ① 把 artwork 从"预览用的虚拟域原图"改回**成品书里的相对路径**
+    //    （预览为了快，`p.artwork` 指的是 `p.path`；成品书必须是 `assets/photos/…`）
+    var ph = state.photos, i, files = [];
+    for (i = 0; i < ph.length; i++) {
+      var p = ph[i];
+      var a = AW.artworkOf(p.order, p.stem, p.width, p.height);
+      p.artwork = a.artwork;
+      p.artwork_width = a.artwork_width;
+      p.artwork_height = a.artwork_height;
+      files.push({ name: a.artwork.split('/').pop(), url: p.path,
+                   w: a.artwork_width, h: a.artwork_height });
+    }
+
+    // ② 让引擎拼出成品书的 index.html（**与电脑端同一份模板**）
+    buildPages();
+    var pay = state.payload || {};
+    var html;
+    try {
+      html = TP.buildIndexHtml({
+        title: pay.title || '',
+        subtitle: pay.subtitle || '',
+        photos: ph,
+        cover_text: pay.coverText || {}
+      }, state.pages, {});
+    } catch (e) {
+      report({ ok: false, error: '拼 index.html 失败：' + (e && e.message ? e.message : e) });
+      return 'build-failed';
+    }
+
+    // ③ 建书目录 + 写 index.html / book-plan.json / 观感资产
+    var d = new Date(), pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var dirId = 'book-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate())
+                + '-' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    var dir;
+    try {
+      dir = sh.publishBook(dirId, html, JSON.stringify(buildBookPlan()));
+    } catch (e) {
+      report({ ok: false, error: '出书落盘失败：' + (e && e.message ? e.message : e) });
+      return 'mkdir-failed';
+    }
+    if (!dir) {
+      report({ ok: false, error: '出书落盘失败：建不了书目录' });
+      return 'mkdir-failed';
+    }
+
+    // ④ 逐张写真 —— 让出一帧，界面进度才动得起来
+    var k = 0, wrote = 0;
+    function writeStep() {
+      if (k >= files.length) {
+        report({ ok: true, publish: { dir: dir, photos: wrote, total: files.length,
+                                      pages: state.pages.length, html: html.length } });
+        return;
+      }
+      var f = files[k];
+      say('正在写入照片 ' + (k + 1) + ' / ' + files.length);
+      try { if (sh.progress) { sh.progress('正在写入照片 ' + (k + 1) + ' / ' + files.length); } }
+      catch (e2) { /* 没挂也无所谓 */ }
+      makeArtwork(f.url, f.w, f.h).then(function (dataUrl) {
+        try { if (sh.addBookPhoto(dir, f.name, dataUrl)) { wrote++; } }
+        catch (e3) { /* 单张失败不中断整本 */ }
+        k++; setTimeout(writeStep, 0);
+      }, function () { k++; setTimeout(writeStep, 0); });
+    }
+    writeStep();
+    return 'started';
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     ★★ 第十五轮（2026-10-09）：**静默更新**（只改 state + 就地改文字节点，**不重画页面**）
+     ══════════════════════════════════════════════════════════════════════════
+
+     他报的现象：「**移动文字会闪烁或排版错误**」——根因就在下面这条链上：
+
+       拖动松手 → 宿主（Kotlin）存草稿 → `setCover()` → `showPage()`
+         ├─ `bookEl.innerHTML = body`  **整页重建** ⇒ `<img>` 重新解码 ⇒ **闪一下**
+         └─ `showPage()` 末尾还 `fixStageSize()` + 派发 `resize`
+            ⇒ `compat.js` 重算 `.book-rig` 尺寸 ⇒ **整本书跳一下**（他看着就是"排版错了"）
+
+     ⇒ 拖动**本来就已经**只改 `.art-page` 上的两个 CSS 变量（零重排、零重画）。
+       缺的只是"把新位置同时告诉 state" ⇒ 这条 `setCoverSilent()` 就干这个：
+       **state 更新、屏幕一个字节都不动**。
+
+     ⚠ 「静默」≠「不生效」：`state.payload` 照样更新 ⇒ **随后翻页 / 出书 / 重进页面
+       拿到的都是最新值**（出书那条路读的就是 `state.payload.coverText`）。
+     ⚠ 「静默」也**不负责把东西画出来** —— 调用方要保证 DOM 已经是对的
+       （拖动就是这种情况；打字那种就需要 [applyTextToDom] 就地改文字节点）。
+     ⚠ 与「自动排版只在进入时跑」是同一条账（他明确要求）：进入页面时走
+       `render()` 整包（含 `assignPlates` 自动分档 + 逐张解码），之后**一律走快路**。
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  /** 把 payload 里的书名/副标题/页脚**就地**写到已经渲染好的 DOM 上（不重建页面）。 */
+  function applyTextToDom() {
+    var pay = state.payload || {};
+    var b = document.getElementById('book');
+    if (!b) { return; }
+    try {
+      var t = b.querySelector('.cover-title');
+      /* ★★ 第二十轮：空串就是空串，**不再兜底成"我的小狗"**。
+       *   之前这里写 `pay.title || '我的小狗'`，导致"输入框清空"后封面还留着默认字
+       *   （用户报的"标题删不掉 / 死板固定"根因之一：每一次 `applyTextToDom` 都把空串回填成默认）。
+       *   现在与 `showPage()` 同一口径：传什么显示什么，空就空。 */
+      if (t) { t.textContent = pay.title || ''; }
+      var s = b.querySelector('.cover-subtitle');
+      if (s) { s.textContent = pay.subtitle || ''; }
+      /* ⚠ 页脚：**空串就一个字都不动** —— 它的默认值「N PHOTOGRAPHS」是引擎现算的，
+         清空等于"回到引擎原样"，而那个原样只有重画才有 ⇒ 这里宁可不动，
+         也不要把用户原来那句删掉还装作"回到默认"。 */
+      var f = b.querySelector('.cover-foot');
+      if (f && pay.footText) { f.textContent = pay.footText; }
+    } catch (e) { /* 找不到节点就算了，state 已经对了 */ }
+  }
+
+  window.__preview = {
+    render: render,
+    /* ★ 第十五轮：「只画封面」模式下**锁在第 1 页**（封面编辑页没有翻页这回事）。
+       ⚠ 不是"禁用按钮"，而是把三个翻页入口**本身**收窄 —— 键盘/代码里任何一条
+         `next()` 都不会把封面换成别的页。 */
+    next: function () {
+      if (coverOnlyMode()) { state.index = 0; showPage(); return 0; }
+      if (state.index < state.pages.length - 1) { state.index++; showPage(); }
+      return state.index;
+    },
+    prev: function () {
+      if (coverOnlyMode()) { state.index = 0; showPage(); return 0; }
+      if (state.index > 0) { state.index--; showPage(); }
+      return state.index;
+    },
+    /** 跳到第 i 页（0 起）。 */
+    goto: function (i) {
+      var k = coverOnlyMode() ? 0
+            : Math.max(0, Math.min(Number(i) || 0, state.pages.length - 1));
+      state.index = k; showPage(); return k;
+    },
+    /**
+     * 改某一张的版面档位 / 位置（M4c）。
+     * plate:    'small' | 'medium' | 'large' | 'portrait' | 'auto'
+     * position: 'center' | 'high' | 'low' | 'aside' | 'auto'
+     * ⇒ 只重排页序、**不重新探测**，点一下立刻见效。
+     */
+    applyEdit: function (order, plate, position) {
+      var p = findPhoto(Number(order));
+      if (!p) { return 'no-photo'; }
+      if (plate) {
+        if (plate === 'auto') { p.plate = state.autoPlates[p.order] || p.plate; }
+        else if (PLATES[plate]) { p.plate = plate; }
+      }
+      if (position) {
+        if (position === 'auto') { p.position = state.autoPos[p.order] || ''; }
+        else if (Object.prototype.hasOwnProperty.call(POS_MAP, position)) {
+          p.position = POS_MAP[position];
+        }
+      }
+      reflow();
+      return 'ok';
+    },
+    /** 重新自动排版（引擎按清晰度名次重算全部档位）。 */
+    autoArrange: function () {
+      if (!state.photos.length) { return 'empty'; }
+      RU.assignPlates(state.photos);
+      recordAuto();
+      reflow();
+      return 'ok';
+    },
+    /**
+     * 重新量尺寸（M5 优化）—— 工作台把左栏收起 / 展开后，**WebView 变宽了**，
+     * 但 window 的 `resize` 事件未必被派发 ⇒ `compat.js` 不会重算 ⇒ 书还是老尺寸。
+     * 这里连派几次（布局变化要几帧才稳定），最后再重画一遍。
+     */
+    relayout: function () {
+      var k = 0;
+      function tick() {
+        fixStageSize();
+        try { window.dispatchEvent(new Event('resize')); } catch (e) { /* 忽略 */ }
+        k++;
+        if (k < 5) { setTimeout(tick, 240); } else { showPage(); }
+      }
+      tick();
+      return 'ok';
+    },
+    /** 改封面文案（M4c）：传 coverText 的 JSON 字符串。 */
+    setCover: function (json) {
+      var conf = {};
+      try { conf = JSON.parse(json || '{}') || {}; } catch (e) { conf = {}; }
+      state.payload = state.payload || {};
+      state.payload.coverText = conf;
+      showPage();
+      return 'ok';
+    },
+    /**
+     * ★★ 第十五轮：**改封面配置但一个字节都不重画** —— 给「拖动文字框」用（他报的闪烁/排版错）。
+     * ⚠ 只在**拖动**这条路上用：调用方（`PreviewBridge.onCoverMove`）
+     *   保证 DOM 上的 `--ct-<key>-x/y` 已经被手指拖到位了，这里只把 state 对齐。
+     * ⚠ **删除/隐藏/改样式仍然走 [setCover]**（那几件必须重画才看得出来：节点要不要存在都不一样）。
+     */
+    setCoverSilent: function (json) {
+      var conf = {};
+      try { conf = JSON.parse(json || '{}') || {}; } catch (e) { conf = {}; }
+      state.payload = state.payload || {};
+      state.payload.coverText = conf;
+      /* ★★ 第十八轮（他报「增大封面文字大小时画面会闪烁」）：
+       *   样式类改动除了对齐 state，还必须**就地改 CSS 变量** ——
+       *   原来这条只改 state，所以样式改动根本不该走它（走 `setCover` 重画才看得见，只是会闪）。
+       * 现在把 CSS 变量也补上 ⇒ 字号/字体/颜色/对齐/宽度改完**立刻可见且不闪**。
+       * ⚠ 口径与引擎 `template.js::coverTextStyle` **逐条对齐**（含 align 的 r/shift 配套）——
+       *   这里只做"往节点上 setProperty"，翻译规则仍以引擎那份为唯一真相。
+       * ⛔ 删/隐藏仍走 `setCover`：那是"节点要不要存在"变了，本函数不增删节点。
+       */
+      this.applyCoverVars(conf);
+      return 'ok';
+    },
+    /**
+     * ★★ 第十八轮：把封面配置**就地**写成 `.art-page` 上的 `--ct-*` 变量。
+     *
+     * 为什么要有它：`setCover()` 会 `showPage()` ⇒ `innerHTML` 整页重建 + 封面图**重新解码**
+     * ⇒ 每按一次字号 A+ 就闪一下（真机实测）。而改字号其实只需要换一个 CSS 变量。
+     * ⚠ 只改**变量**，不碰节点结构 ⇒ 同一个 DOM 对象（验收判据 `sameImg` 仍为真）。
+     * ⚠ 没配置到的字段要**还原成引擎的默认值**（否则"取消选中"后残留上一次的值）：
+     *   做法是清掉本元素所有 `--ct-<key>-*` 再按配置重写 —— 引擎的兜底值写在
+     *   `font-size:var(--ct-title-size,2.1cqw)` 那里，清掉变量就自动回到兜底值。
+     */
+    applyCoverVars: function (conf) {
+      /* ⚠ 用**引擎公开的** `TP.fmtG` / `TP.availableFontFamilies`（都在 `template.js` 的导出面里），
+       *   不要照抄它们的实现、更不要写 `fmtG(...)` 裸调用 —— 那是 `template.js` 的私有作用域函数，
+       *   在本文件里裸调会 ReferenceError ⇒ 样式静默失效，正是"数字变了画面没变"那种最难查的坑。
+       *   ⚠ 但引擎是异步加载的 ⇒ 每次现取，取不到就退回本地同口径实现（宁可粗一点也不能整体不生效）。 */
+      var g = function (v) {
+        try {
+          if (TP && TP.fmtG) { return TP.fmtG(v); }
+        } catch (e) { /* 引擎还没好 ⇒ 走下面 */ }
+        if (typeof v !== 'number' || v !== v) { return String(v); }
+        return String(parseFloat(v.toPrecision(6)));
+      };
+      var families = null;
+      try { families = TP && TP.availableFontFamilies ? TP.availableFontFamilies() : null; } catch (e2) { families = null; }
+      var page = document.querySelector('.art-page');
+      if (!page) { return 'no-page'; }
+      /* ⚠⚠★本轮真机实测撞出的红，根因就在这个位置（**不是动画**，别往动画上缺少，第一次回滚动画后仍在同一行翻盖的）：
+       *   最早版本每按一次键都把整个 `.art-page` 的 `--ct-*` 全部遍历一遍并 `removeProperty`，
+       *   真机上连按 5 次 A+ 就把 WebView 沙箱进程内存撑到 **704MB** 然后渲染进程打清：
+       *   `logcat`：`am_pss … 650074112, …703975424…` + `Fatal signal 5 (SIGTRAP)` + backtrace 全在 `libmonochrome.so`
+       *   ⇒ **做减法**：不再每次全量清，只写**这一次真变了的那一条**。
+       *   回到默认值的事交给 [clearCoverVars]（撤回/恢复默认时**才**调一次，不跟着按键跑）。 */
+      try {
+        for (var e in conf) {
+          if (!Object.prototype.hasOwnProperty.call(conf, e)) { continue; }
+          var c = conf[e] || {};
+          var p = '--ct-' + e + '-';
+          if (c.x !== undefined && c.x !== null) { page.style.setProperty(p + 'x', g(c.x) + '%'); }
+          if (c.y !== undefined && c.y !== null) { page.style.setProperty(p + 'y', g(c.y) + '%'); }
+          if (c.size !== undefined && c.size !== null) { page.style.setProperty(p + 'size', g(c.size) + 'cqw'); }
+          if (c.w !== undefined && c.w !== null) { page.style.setProperty(p + 'w', g(c.w) + '%'); }
+          if (c.color !== undefined && c.color !== null) { page.style.setProperty(p + 'color', c.color); }
+          if (c.align !== undefined && c.align !== null) {
+            page.style.setProperty(p + 'align', c.align);
+            if (c.align === 'center' || c.align === 'right') {
+              page.style.setProperty(p + 'r', 'auto');
+              page.style.setProperty(p + 'shift', 'translateX(' + (c.align === 'center' ? '-50%' : '-100%') + ')');
+            }
+          }
+          if (c.italic !== undefined && c.italic !== null) {
+            page.style.setProperty(p + 'style', c.italic ? 'italic' : 'normal');
+          }
+          /* ⚠ `font` 走引擎的字体名映射（'serif'/'hei'… ⇒ 具体 family 串）——
+           *   用引擎**公开**的 `availableFontFamilies()`；取不到就**不写**，
+           *   宁可少改也不要写错字体名（写错会让整段字变 fallback 字体，比不改更糟）。
+           *   ⚠ "取消/撤回"时靠上面的"清掉全部变量"回到 `var(--book-serif)` 兜底。 */
+          if (c.font !== undefined && c.font !== null && families) {
+            var fam = families[c.font];
+            if (fam) { page.style.setProperty(p + 'family', fam); }
+          }
+          if (c.hide !== undefined && c.hide !== null) {
+            if (c.hide) { page.style.setProperty(p + 'display', 'none'); }
+          }
+        }
+        /* ★★ 最关键的一行（第十八轮真机实测才提醒）：
+         *   变量写好之后**必须让 `cqwfix.js` 重算一遍**。
+         *   因为那台机的 WebView **不认识 `cqw`**（`CSS.supports('font-size','1cqw') === false`），
+         *   它把 cqw 换算成**内联 `font-size: px`**；只改 CSS 变量而不让它重算
+         *   → 面板上数字变了、**实测画面上字号死死不动**（`24.19px` 一动不动）。
+         *   ⚠ 新内核（认识 cqw）下 `cqwfix.js` 整个文件早 return → 这个钩子**不存在**，必须先判存在。 */
+        try {
+          if (window.__cqwfixRun) { window.__cqwfixRun('改封面样式'); }
+        } catch (e3) { /* 旧内核路径：没装就等于它不需要这一步 */ }
+      } catch (err) {
+        if (window.console) { console.warn('[applyCoverVars]', err); }
+        return 'err';
+      }
+      return 'ok';
+    },
+    /**
+     * ★★ 第十八轮：把 `.art-page` 上的 `--ct-*` 全部去掉（**回到引擎默认值**）。
+     *
+     * ⚠ 为什么单独拆出来：“清全部”是一个重动作，按键时每次都跑会把 WebView 内存撑爆（实测 704MB）。
+     *   只在**撤回/恢复默认**（性价低、现场只碰一次）调它。
+     */
+    clearCoverVars: function () {
+      var page = document.querySelector('.art-page');
+      if (!page) { return 'no-page'; }
+      try {
+        var names = [];
+        for (var n = 0; n < page.style.length; n++) {
+          var nm = page.style.item(n);
+          if (nm.indexOf('--ct-') === 0) { names.push(nm); }
+        }
+        for (var m = 0; m < names.length; m++) { page.style.removeProperty(names[m]); }
+        return 'cleared ' + names.length;
+      } catch (err) {
+        return 'err';
+      }
+    },
+    /**
+     * 改封面**文字**（2026-10-08 第四轮）：`{"title":"…","subtitle":"…"}`。
+     *
+     * ★ 为什么必须有这条快路：书名/副标题原来是 `render(payload)` 里带进来的，
+     *   而 `render()` 会**把每一张照片重新解码 + 跑探测**（十几张要十几秒）
+     *   ⇒ 拿它来跟着输入框走，每敲一个字就卡一次，根本没法用。
+     *   这里与 `setCover` 同一套路：只覆盖 `state.payload` 上那两个字段再 `showPage()`
+     *   —— **一个像素都不重新解码**。
+     * ★ 为什么"只重画当前页"就够：`showPage()` 每次都是从 `state.payload` 现读 title/subtitle
+     *   （封面、书名页、封底的水印都读它）⇒ 翻到哪一页都拿的是**最新**文字，
+     *   不需要把每一页都重画一遍。
+     * ⚠ 但**重画一次 = 整页 innerHTML 重建 + 图片重新解码**：跨页预览里翻到哪页都能接受，
+     *   而"只画封面"那一页（竖屏封面编辑页）**只有一个封面**在屏幕上 ⇒ 打字会闪。
+     *   ⇒ 那种场合请用 [setTextSilent]。
+     */
+    setText: function (json) {
+      var t = {};
+      try { t = JSON.parse(json || '{}') || {}; } catch (e) { t = {}; }
+      state.payload = state.payload || {};
+      if (typeof t.title === 'string') { state.payload.title = t.title; }
+      if (typeof t.subtitle === 'string') { state.payload.subtitle = t.subtitle; }
+      /* ★ 2026-10-08（第六轮）：页脚文字**也走这条快路**（否则 `showPage()` 拿不到它）。
+       *   空串 ⇒ 保持引擎现算的「N PHOTOGRAPHS」不变（`showPage` 里 `if (pay.footText)` 才换）。 */
+      if (typeof t.foot === 'string') {
+        state.payload.footText = t.foot;
+        state.lastFootText = t.foot;      // ★ 供 render() 整包替换时带回（见 render 开头）
+      }
+      showPage();
+      return 'ok';
+    },
+    /**
+     * ★★ 第十五轮：**改文字但不重画**（就地改 `.cover-title` / `.cover-subtitle` / `.cover-foot`
+     * 的文字节点）——给「只画封面」那一页打字用，见 [applyTextToDom] 上面那段账。
+     * ⚠ 只在**只画封面**（`?cover=1`）时用：那种页面屏幕上只有封面，
+     *   而书名还出现在扉页/版权页/封底（`template.js`）⇒ 跨页预览里必须走 [setText] 重画。
+     */
+    setTextSilent: function (json) {
+      var t = {};
+      try { t = JSON.parse(json || '{}') || {}; } catch (e) { t = {}; }
+      state.payload = state.payload || {};
+      if (typeof t.title === 'string') { state.payload.title = t.title; }
+      if (typeof t.subtitle === 'string') { state.payload.subtitle = t.subtitle; }
+      applyTextToDom();
+      return 'ok';
+    },
+    /** ★ 只改页脚文字（面板里那一个输入框的快路，与 setText 同套路）。 */
+    setFootText: function (txt) {
+      state.payload = state.payload || {};
+      state.payload.footText = String(txt == null ? '' : txt);
+      state.lastFootText = state.payload.footText;
+      showPage();
+      return 'ok';
+    },
+    /** ★★ 第十五轮：页脚文字的**静默**版（同上，给"只画封面"那一页打字用）。 */
+    setFootTextSilent: function (txt) {
+      state.payload = state.payload || {};
+      state.payload.footText = String(txt == null ? '' : txt);
+      state.lastFootText = state.payload.footText;
+      applyTextToDom();
+      return 'ok';
+    },
+    /**
+     * ★ 第七轮（第④条）：**让某一个文字框发亮**（两段式删除的第一下）。
+     * ⚠ 传空串 = 全部不发亮。
+     * ⚠ 这是**编辑态的临时状态**：不进 `state.payload`、不进草稿、**成品书上不存在**
+     *   （描边那段 CSS 只由本文件注入，成品书走静态文件加载不到它）。
+     */
+    setActiveExtra: function (ct) {
+      markActiveExtra(String(ct || '') || null);
+      return 'ok';
+    },
+    /** ★ 当前封面各处的文字（工作台切输入框时用来回填，别让它自己猜）。 */
+    coverTexts: function () {
+      var pay = state.payload || {};
+      return JSON.stringify({
+        title: pay.title || '',
+        subtitle: pay.subtitle || '',
+        foot: pay.footText || '',
+        coverText: pay.coverText || {}
+      });
+    },
+    /** 出书（M5）：把这本书落成目录。结果通过 `PreviewBridge.onPlan` 回给 Kotlin。 */
+    publish: publish,
+    info: function () {
+      return JSON.stringify({ index: state.index, pages: state.pages.length,
+                              photos: state.photos.length, bad: state.bad,
+                              plates: platesOf(), figure: figureClass(),
+                              article: articleClass() });
+    },
+    plates: platesOf,
+    ready: true
+  };
+
+  // 告诉 Kotlin：宿主脚本已经就位（可以调 render 了）
+  report({ ok: true, ready: true, photos: 0, pages: 0 });
+})();
+</script>
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     ★★ 第十一轮（2026-10-09）：预览区**交互式操作**（他要求）
+        ① **双指捏合缩放**封面布局（1.0×–3.5×）+ 缩放后**单指拖动平移**
+        ② **点/按住封面上的文字即可拖动文字框**（改 x/y 百分比 → 进草稿、进成品书）
+
+     ⚠⚠ 只在**工作台预览**里生效 —— 成品书走 `books/<书名>/` 那一套静态文件，
+        压根加载不到本文件 ⇒ 结构上不可能漏到成品书上（与「文字框描边」同一个道理）。
+     ⚠⚠ **四颗引擎 JS 一字未改**：位置只动 `.art-page` 上的 `--ct-<key>-x/y`
+        —— 那本来就是**引擎自己的输出格式**（见 `template.js::coverTextStyle`）。
+     ★ 为什么不用 WebView 自带的捏合缩放（`setBuiltInZoomControls`）：
+        那会把整个页面（含页码/状态行）一起放大、还会跟「点封面文字拾取」抢手势。
+        这里只缩 `.book-rig`，界面不动。
+     ★ 坐标换算为什么用 `offsetWidth/Height` 而不是 `getBoundingClientRect()`：
+        rect 是**缩放后**的尺寸（transform 会影响它）⇒ 拿它换算会把缩放算两遍。
+        `offsetWidth` 是**布局尺寸**、不受 transform 影响；屏幕位移再除以 z 折回布局位移。
+     ════════════════════════════════════════════════════════════════════════ -->
+<style>
+  /* 缩放/平移只落在 `.book-rig` 上（transform 不触发重排，也不动 compat.js 写的宽高）
+
+     ⚠⚠ **锚点必须 `0 0`（左上），不能用中点** —— 真机实测（`F148`）：
+       预览视口只有 **371×125 CSS px**，而 `.book-rig` 是 **200×125 且落在 (0,0)**
+       （书贴左上角，右边那 171px 是木桌留白）。
+       锚点取中点时，放大 2× ⇒ rig 变 `(-100,-62) 400×250`
+       ⇒ **封面的书名中心跑到 y = −5，飞出视口上方**（`elementFromPoint` 返回 null）
+       ⇒ 用户"双指一放大，封面上的字就不见了"，而且那一点也点不到。
+       ⇒ 锚点改 **左上** ⇒ 书向右下长大、**左上角永远留在原位**，字一直在视野里。 */
+  .book-rig {
+    transform: translate(var(--pv-tx, 0px), var(--pv-ty, 0px)) scale(var(--pv-zoom, 1));
+    transform-origin: 0 0;
+    transition: transform .12s linear;
+  }
+  /* 预览区自己管手势 ⇒ 关掉浏览器的滚动/缩放；文字不许被长按选中（否则拖动会变成选字） */
+  html, body { touch-action: none; }
+  .cover-title, .cover-subtitle, .cover-foot, .cover-extra {
+    -webkit-user-select: none; user-select: none;
+    cursor: move;
+  }
+  /* ★ 缩放角标：只在 z>1 时出现，点它就复位（没有它的话"放大了回不去"） */
+  #pv-zoom-badge {
+    position: fixed; right: 8px; top: 8px; z-index: 30; display: none;
+    font: 12px/1.6 -apple-system, "Microsoft YaHei", sans-serif;
+    padding: 3px 10px; border-radius: 20px; cursor: pointer;
+    background: rgba(30, 30, 28, .78); color: #fff;
+  }
+</style>
+<script>
+(function () {
+  'use strict';
+  var rig = document.querySelector('.book-rig');
+  if (!rig) { return; }
+
+  var Z_MIN = 1, Z_MAX = 3.5, DRAG_PX = 5;
+
+  var z = 1, tx = 0, ty = 0;
+  var mode = null;                 // 'pinch' | 'pan' | 'drag'
+  var pinchD0 = 0, pinchZ0 = 1;
+  var pan0 = null;
+  var drag = null;
+
+  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function dist(a, b) {
+    var dx = a.clientX - b.clientX, dy = a.clientY - b.clientY;
+    return Math.sqrt(dx * dx + dy * dy) || 0;
+  }
+
+  /* ---------------- 缩放 / 平移 ---------------- */
+  /* ⚠ 与 `transform-origin: 0 0` 配套：缩放从**左上角**向外长 ⇒
+     平移只能往**左/上**方向拉（负值）才能看到右下那半张；
+     往右/下推没有意义（那里已经到头了）⇒ 夹到 [−W·(z−1), 0]。
+     这样"放大后封面顶部永远看得见"，不会出现"字飞出屏幕"。 */
+  function clampPan() {
+    if (z <= 1.0001) { z = Math.max(z, Z_MIN); tx = 0; ty = 0; return; }
+    var mx = rig.offsetWidth * (z - 1), my = rig.offsetHeight * (z - 1);
+    tx = clamp(tx, -mx, 0); ty = clamp(ty, -my, 0);
+  }
+  function apply() {
+    clampPan();
+    rig.style.setProperty('--pv-zoom', String(z));
+    rig.style.setProperty('--pv-tx', tx + 'px');
+    rig.style.setProperty('--pv-ty', ty + 'px');
+    if (badge) { badge.style.display = (z > 1.001) ? 'block' : 'none'; }
+    if (badge) { badge.textContent = Math.round(z * 100) + '%　✕ 复位'; }
+  }
+
+  var badge = document.createElement('div');
+  badge.id = 'pv-zoom-badge';
+  badge.addEventListener('click', function (e) {
+    e.stopPropagation(); e.preventDefault(); resetZoom();
+  });
+  document.body.appendChild(badge);
+
+  function resetZoom() { z = 1; tx = 0; ty = 0; apply(); }
+
+  /**
+   * ★★ 第十五轮（2026-10-09）：**以屏幕上的某一点为锚点缩放**（他要求）。
+   *
+   * 之前只会 `z = v` 再 `apply()` ⇒ 因为 `transform-origin: 0 0`，
+   * **不管手指按在哪儿，画面都只往右下长** —— 他原话：
+   * 「放缩封面的预览图不要固定中心在左上角，缩放中心就随手指点击的位置」。
+   *
+   * 数学（`transform: translate(tx,ty) scale(z)`、origin `0 0`）：
+   *   屏幕x = ox + tx + u·z      （ox = rig **未变换**时的 left，u = 该点在 rig 布局坐标里的位置）
+   *   要让屏幕上的 [fx,fy] **钉住不动** ⇒ 保持 u = (fx − rect.left)/z 不变 ⇒ 反解新的 t。
+   * ⚠ `u` 用 `rect.left`（**已变换**）与 `z` 反推 —— `rect` 的宽高就是 `offsetWidth·z`，
+   *   所以 `(fx − rect.left)/z` 正好是"布局单位"下的本地坐标（与 `F148` 那条同口径）。
+   * ⚠ 落在封面**外面**（木桌上）的锚点也算数：`u` 会是负数或大于宽 —— 那正是"朝我点的地方放大"。
+   */
+  function zoomAbout(z1, fx, fy) {
+    /* ⚠⚠ 取 rect 之前**必须先关掉过渡**（本轮真机踩到的第二个坑）：
+       `.book-rig` 挂着 `transition: transform .12s linear` ⇒ 改完 CSS 变量的**同一个 JS 帧**里
+       `getBoundingClientRect()` 拿到的是**动画起点**（旧值），而我们的 `tx/ty/z` 已经是新值
+       ⇒ `ox = r.left - tx` 直接算歪 ⇒ 捏合时锚点**慢慢漂走**（第一版判据实测就是"手指底下
+       从书名变成了照片"）。关掉过渡 ⇒ 变量一写、rect 立刻是新值，数学才对得上。
+       ⚠ 松手后再把过渡还回去（下一帧），程序化的 `__pvZoom.set/reset` 仍然是平滑的。 */
+    var prevTransition = rig.style.transition || '';
+    rig.style.transition = 'none';
+    var r = rig.getBoundingClientRect();
+    var ox = r.left - tx, oy = r.top - ty;              // 未变换时的左上角（屏幕坐标）
+    var u = z > 0 ? (fx - r.left) / z : 0;
+    var v = z > 0 ? (fy - r.top) / z : 0;
+    z = clamp(z1, Z_MIN, Z_MAX);
+    tx = fx - u * z - ox;
+    ty = fy - v * z - oy;
+    apply();
+    setTimeout(function () { rig.style.transition = prevTransition; }, 0);
+    return z;
+  }
+
+  /** 不带锚点的缩放（给验收接口/键盘用）：锚点取**当前视口中心**。 */
+  function setZoom(v) {
+    return zoomAbout(v, window.innerWidth / 2, window.innerHeight / 2);
+  }
+
+  /* ---------------- 文字框拖动 ---------------- */
+  /** 从被点的元素往上找"封面文字"这一层，返回它的身份键（与引擎的 data-ct 同一套）。 */
+  function keyOf(el) {
+    if (!el || el.nodeType !== 1 || !el.className) { return null; }
+    var c = String(el.className);
+    if (/\bcover-title\b/.test(c)) { return 'title'; }
+    if (/\bcover-subtitle\b/.test(c)) { return 'subtitle'; }
+    if (/\bcover-foot\b/.test(c)) { return 'foot'; }
+    if (/\bcover-extra\b/.test(c)) { return el.getAttribute('data-ct') || null; }
+    return null;
+  }
+  function coverElFrom(target) {
+    var n = target, hop = 0;
+    while (n && n.nodeType === 1 && hop++ < 6) {
+      if (keyOf(n)) { return n; }
+      n = n.parentNode;
+    }
+    return null;
+  }
+
+  function startDrag(el, cx, cy) {
+    var page = el.closest ? el.closest('.art-page') : null;
+    if (!page) { return false; }
+    var cs = getComputedStyle(el);
+    drag = {
+      el: el, key: keyOf(el), page: page,
+      baseL: parseFloat(cs.left) || 0,      /* 计算值是 px —— 已解析过百分比 */
+      baseT: parseFloat(cs.top) || 0,
+      sx: cx, sy: cy, moved: false, x: 0, y: 0
+    };
+    /* ★ 一按下就"选中它"（复用引擎已有的拾取通路）⇒ 底部抽屉同时切到这一处 */
+    try {
+      if (window.__previewPick) { window.__previewPick(drag.key); }
+    } catch (e) { /* 忽略 */ }
+    return true;
+  }
+
+  function moveDrag(cx, cy, ev) {
+    if (!drag) { return; }
+    var sdx = cx - drag.sx, sdy = cy - drag.sy;
+    if (!drag.moved && Math.abs(sdx) < DRAG_PX && Math.abs(sdy) < DRAG_PX) { return; }
+    drag.moved = true;
+    var pw = drag.page.offsetWidth || 1, ph = drag.page.offsetHeight || 1;
+    var nx = clamp((drag.baseL + sdx / z) / pw * 100, -25, 125);
+    var ny = clamp((drag.baseT + sdy / z) / ph * 100, -25, 125);
+    drag.x = nx; drag.y = ny;
+    drag.page.style.setProperty('--ct-' + drag.key + '-x', nx.toFixed(3) + '%');
+    drag.page.style.setProperty('--ct-' + drag.key + '-y', ny.toFixed(3) + '%');
+    if (ev && ev.cancelable) { ev.preventDefault(); }
+  }
+
+  function endDrag() {
+    var d = drag; drag = null;
+    if (!d || !d.moved) { return; }
+    var box = { el: d.key, x: +d.x.toFixed(3), y: +d.y.toFixed(3) };
+    try { window.__lastCoverMove = box; } catch (e) { /* 忽略 */ }
+    try {
+      if (window.PreviewBridge && window.PreviewBridge.onCoverMove) {
+        window.PreviewBridge.onCoverMove(JSON.stringify(box));
+      }
+    } catch (e2) { /* 桥没挂上也不该崩 */ }
+  }
+
+  /* ---------------- 手势总入口 ---------------- */
+  function onStart(points, ev, isMouse) {
+    if (points.length >= 2) {
+      mode = 'pinch'; pinchD0 = dist(points[0], points[1]); pinchZ0 = z;
+      drag = null; pan0 = null;
+      if (ev && ev.cancelable) { ev.preventDefault(); }
+      return;
+    }
+    if (isMouse) {
+      /* 鼠标：点在文字上 = 拖字；点在别处 = 平移（仅放大后） */
+      var el = coverElFrom(ev.target);
+      if (el) { mode = 'drag'; startDrag(el, points[0].clientX, points[0].clientY); return; }
+      if (z > 1) { mode = 'pan'; pan0 = { x: points[0].clientX, y: points[0].clientY, tx: tx, ty: ty }; }
+      else { mode = null; }
+      return;
+    }
+    var el2 = coverElFrom(ev.target);
+    if (el2) { mode = 'drag'; startDrag(el2, points[0].clientX, points[0].clientY); return; }
+    if (z > 1) {
+      mode = 'pan';
+      pan0 = { x: points[0].clientX, y: points[0].clientY, tx: tx, ty: ty };
+      if (ev && ev.cancelable) { ev.preventDefault(); }
+    } else { mode = null; }
+  }
+
+  function onMove(points, ev) {
+    if (mode === 'pinch' && points.length >= 2) {
+      if (pinchD0 > 4) {
+        /* ★ 第十五轮：锚点＝**两指中点**（跟着手指走），不再固定左上角 ⇒ 见 [zoomAbout] */
+        var zz = pinchZ0 * dist(points[0], points[1]) / pinchD0;
+        zoomAbout(zz, (points[0].clientX + points[1].clientX) / 2,
+                      (points[0].clientY + points[1].clientY) / 2);
+      }
+      if (ev && ev.cancelable) { ev.preventDefault(); }
+      return;
+    }
+    if (mode === 'drag' && drag) { moveDrag(points[0].clientX, points[0].clientY, ev); return; }
+    if (mode === 'pan' && pan0) {
+      tx = pan0.tx + (points[0].clientX - pan0.x);
+      ty = pan0.ty + (points[0].clientY - pan0.y);
+      apply();
+      if (ev && ev.cancelable) { ev.preventDefault(); }
+    }
+  }
+
+  function onEnd(left, ev) {
+    if (mode === 'drag') { endDrag(); }
+    if (!left || left.length === 0) { mode = null; pinchD0 = 0; pan0 = null; return; }
+    /* 双指松开一根 ⇒ 立刻转成平移，否则剩下的那根会"跳"一下 */
+    if (mode === 'pinch' && left.length === 1) {
+      mode = (z > 1) ? 'pan' : null;
+      pan0 = (mode === 'pan') ? { x: left[0].clientX, y: left[0].clientY, tx: tx, ty: ty } : null;
+    }
+  }
+
+  function pts(list) {
+    var a = [];
+    for (var i = 0; i < list.length; i++) { a.push({ clientX: list[i].clientX, clientY: list[i].clientY }); }
+    return a;
+  }
+
+  var hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+  if (hasTouch) {
+    document.addEventListener('touchstart', function (e) { onStart(pts(e.touches), e, false); }, { passive: false });
+    document.addEventListener('touchmove', function (e) { onMove(pts(e.touches), e); }, { passive: false });
+    document.addEventListener('touchend', function (e) { onEnd(pts(e.touches), e); }, { passive: false });
+    document.addEventListener('touchcancel', function (e) { onEnd(pts(e.touches), e); }, { passive: false });
+  } else {
+    /* 桌面（Chrome 直接开这个页面调试/验收时走这条）：鼠标拖 + 滚轮缩放 */
+    document.addEventListener('mousedown', function (e) { onStart([{ clientX: e.clientX, clientY: e.clientY }], e, true); });
+    document.addEventListener('mousemove', function (e) {
+      if (mode) { onMove([{ clientX: e.clientX, clientY: e.clientY }], e); }
+    });
+    document.addEventListener('mouseup', function () { onEnd([], null); });
+    document.addEventListener('wheel', function (e) {
+      if (!e.ctrlKey && Math.abs(e.deltaY) < 1) { return; }
+      e.preventDefault();
+      /* ★ 第十五轮：锚点＝**鼠标所在那一点**（与触摸同一套，见 [zoomAbout]） */
+      zoomAbout(z * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX, e.clientY);
+    }, { passive: false });
+  }
+
+  /* ★ 拾取挂钩：引擎原有的 `reportCoverPick` 是**闭包内**的，
+     这里给外面一个同口径的入口（拖动的"按下即选中"要用）。 */
+  window.__previewPick = function (key) {
+    try {
+      var b = document.getElementById('book');
+      var el = b && b.querySelector(
+        key === 'title' ? '.cover-title' : key === 'subtitle' ? '.cover-subtitle'
+        : key === 'foot' ? '.cover-foot' : '.cover-extra[data-ct="' + key + '"]');
+      if (!el) { return; }
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    } catch (e) { /* 忽略 */ }
+  };
+
+  /* ★ 验收/调试接口（CDP 读得到；成品书里不存在） */
+  window.__pvZoom = {
+    get: function () { return z; },
+    set: setZoom,
+    /** ★ 第十五轮：**以指定点为锚点**缩放（验收用 —— 与手指捏合同一条通路 [zoomAbout]）。 */
+    setAbout: function (v, fx, fy) { return zoomAbout(v, fx, fy); },
+    reset: resetZoom,
+    tx: function () { return tx; },
+    ty: function () { return ty; }
+  };
+  window.__pvDrag = {
+    keyOf: keyOf,
+    start: function (key, cx, cy) {
+      var b = document.getElementById('book');
+      var el = b && b.querySelector(
+        key === 'title' ? '.cover-title' : key === 'subtitle' ? '.cover-subtitle'
+        : key === 'foot' ? '.cover-foot' : '.cover-extra[data-ct="' + key + '"]');
+      if (!el) { return 'no-el'; }
+      startDrag(el, cx, cy); return 'ok';
+    },
+    move: function (cx, cy) { moveDrag(cx, cy, null); return drag ? 'ok' : 'no-drag'; },
+    end: function () { endDrag(); return 'ok'; },
+    last: function () { return window.__lastCoverMove || null; }
+  };
+
+  apply();
+})();
+</script>
+</body>
+</html>

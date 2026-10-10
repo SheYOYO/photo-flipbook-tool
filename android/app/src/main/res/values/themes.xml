@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 横屏全屏观感：状态栏透明、内容顶到边（M4 还要做沉浸式全屏） -->
+    <style name="Theme.PhotoFlipbook" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#00000000</item>
+        <item name="android:navigationBarColor">#00000000</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

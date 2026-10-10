@@ -1,0 +1,356 @@
+{
+  "title": "我的小狗",
+  "subtitle": "Photographs",
+  "generated_at": "2026-09-30 08:04:06",
+  "source_dir": "C:\\Users\\Admin（无密码）\\Downloads",
+  "photo_count": 14,
+  "page_count": 17,
+  "cover_text": {
+    "title": {
+      "font": "xuanzang",
+      "x": 8.5,
+      "y": 14.999,
+      "w": 82.5,
+      "size": 14.6
+    },
+    "subtitle": {
+      "x": 6.294,
+      "y": 30.453,
+      "size": 14.8
+    },
+    "foot": {
+      "x": 5.959,
+      "y": 3.856
+    }
+  },
+  "photos": [
+    {
+      "order": 1,
+      "file": "1790606831107_edit_1342872082515546..jpg",
+      "artwork": "assets/photos/01-1790606831107_edit_1342872082515546.jpg",
+      "plate": "medium",
+      "position": "",
+      "orientation": "portrait",
+      "size": [
+        750,
+        1692
+      ],
+      "exif_orientation": 1,
+      "mean_lum": 101.8,
+      "sharpness": 0.0375,
+      "taken_at": "2026-09-28"
+    },
+    {
+      "order": 2,
+      "file": "1790406905695..jpeg",
+      "artwork": "assets/photos/02-1790406905695.jpg",
+      "plate": "small",
+      "position": "aside",
+      "orientation": "portrait",
+      "size": [
+        960,
+        1250
+      ],
+      "exif_orientation": null,
+      "mean_lum": 129.0,
+      "sharpness": 0.0158,
+      "taken_at": ""
+    },
+    {
+      "order": 3,
+      "file": "1790479129900..png",
+      "artwork": "assets/photos/03-1790479129900.jpg",
+      "plate": "medium",
+      "position": "aside",
+      "orientation": "portrait",
+      "size": [
+        1080,
+        1409
+      ],
+      "exif_orientation": null,
+      "mean_lum": 102.6,
+      "sharpness": 0.0292,
+      "taken_at": ""
+    },
+    {
+      "order": 4,
+      "file": "IMG_20260716_190158..jpg",
+      "artwork": "assets/photos/04-IMG_20260716_190158.jpg",
+      "plate": "portrait",
+      "position": "",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        3840
+      ],
+      "exif_orientation": null,
+      "mean_lum": 139.6,
+      "sharpness": 0.0444,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 5,
+      "file": "IMG_20260716_190200..jpg",
+      "artwork": "assets/photos/05-IMG_20260716_190200.jpg",
+      "plate": "large",
+      "position": "high",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        3840
+      ],
+      "exif_orientation": null,
+      "mean_lum": 126.3,
+      "sharpness": 0.0456,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 6,
+      "file": "IMG_20260716_190202..jpg",
+      "artwork": "assets/photos/06-IMG_20260716_190202.jpg",
+      "plate": "portrait",
+      "position": "",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        3840
+      ],
+      "exif_orientation": null,
+      "mean_lum": 125.2,
+      "sharpness": 0.0456,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 7,
+      "file": "IMG_20260716_190203..jpg",
+      "artwork": "assets/photos/07-IMG_20260716_190203.jpg",
+      "plate": "large",
+      "position": "high",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        3840
+      ],
+      "exif_orientation": null,
+      "mean_lum": 126.3,
+      "sharpness": 0.0455,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 8,
+      "file": "IMG_20260716_190207..jpg",
+      "artwork": "assets/photos/08-IMG_20260716_190207.jpg",
+      "plate": "portrait",
+      "position": "",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        3840
+      ],
+      "exif_orientation": null,
+      "mean_lum": 127.0,
+      "sharpness": 0.0496,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 9,
+      "file": "IMG_20260716_190239..jpg",
+      "artwork": "assets/photos/09-IMG_20260716_190239.jpg",
+      "plate": "large",
+      "position": "high",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        4096
+      ],
+      "exif_orientation": null,
+      "mean_lum": 143.8,
+      "sharpness": 0.0322,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 10,
+      "file": "IMG_20260716_190240..jpg",
+      "artwork": "assets/photos/10-IMG_20260716_190240.jpg",
+      "plate": "medium",
+      "position": "",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        4096
+      ],
+      "exif_orientation": null,
+      "mean_lum": 143.6,
+      "sharpness": 0.0328,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 11,
+      "file": "IMG_20260716_190241..jpg",
+      "artwork": "assets/photos/11-IMG_20260716_190241.jpg",
+      "plate": "medium",
+      "position": "",
+      "orientation": "portrait",
+      "size": [
+        3072,
+        4096
+      ],
+      "exif_orientation": null,
+      "mean_lum": 143.8,
+      "sharpness": 0.0344,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 12,
+      "file": "IMG_20260716_190504..jpg",
+      "artwork": "assets/photos/12-IMG_20260716_190504.jpg",
+      "plate": "medium",
+      "position": "",
+      "orientation": "landscape",
+      "size": [
+        4096,
+        3072
+      ],
+      "exif_orientation": 1,
+      "mean_lum": 145.1,
+      "sharpness": 0.0354,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 13,
+      "file": "IMG_20260716_190505_3..jpg",
+      "artwork": "assets/photos/13-IMG_20260716_190505_3.jpg",
+      "plate": "large",
+      "position": "",
+      "orientation": "landscape",
+      "size": [
+        4096,
+        3072
+      ],
+      "exif_orientation": 1,
+      "mean_lum": 141.8,
+      "sharpness": 0.0341,
+      "taken_at": "2026-07-16"
+    },
+    {
+      "order": 14,
+      "file": "IMG_20260716_190505_6..jpg",
+      "artwork": "assets/photos/14-IMG_20260716_190505_6.jpg",
+      "plate": "large",
+      "position": "",
+      "orientation": "landscape",
+      "size": [
+        4096,
+        3072
+      ],
+      "exif_orientation": 1,
+      "mean_lum": 133.0,
+      "sharpness": 0.0253,
+      "taken_at": "2026-07-16"
+    }
+  ],
+  "pages": [
+    {
+      "index": 0,
+      "kind": "cover",
+      "density": "hard",
+      "photo": null
+    },
+    {
+      "index": 1,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 1
+    },
+    {
+      "index": 2,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 2
+    },
+    {
+      "index": 3,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 3
+    },
+    {
+      "index": 4,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 4
+    },
+    {
+      "index": 5,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 5
+    },
+    {
+      "index": 6,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 6
+    },
+    {
+      "index": 7,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 7
+    },
+    {
+      "index": 8,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 8
+    },
+    {
+      "index": 9,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 9
+    },
+    {
+      "index": 10,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 10
+    },
+    {
+      "index": 11,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 11
+    },
+    {
+      "index": 12,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 12
+    },
+    {
+      "index": 13,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 13
+    },
+    {
+      "index": 14,
+      "kind": "plate",
+      "density": "soft",
+      "photo": 14
+    },
+    {
+      "index": 15,
+      "kind": "colophon",
+      "density": "soft",
+      "photo": null
+    },
+    {
+      "index": 16,
+      "kind": "backcover",
+      "density": "hard",
+      "photo": null
+    }
+  ]
+}

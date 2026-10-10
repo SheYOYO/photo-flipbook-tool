@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- M1 不需要任何权限：书架只扫自己的私有目录 -->
+
+    <!-- ★ 第八轮①甲案（2026-10-08）：选照片期间临时锁系统旋转，让相册竖着弹。
+         ⚠⚠ 这是**特殊权限**：声明了也不生效，必须用户到系统设置里手动开
+         「照片画册 → 修改系统设置」。所以 App 侧只做**检测 + 引导**，
+            **绝不静默改**（没授权就退回老样子：横屏选择器，照样能选照片）。
+         ★ 它只在 [PickProxyActivity] 进/出那几行里被用到，选完立刻交还。 -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="照片画册"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PhotoFlipbook"
+        android:hardwareAccelerated="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode"
+            android:screenOrientation="sensorLandscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 书页（M2）：WebView 承载，观感就是链① 的那一套。
+             ⚠ configChanges 必须带 orientation|screenSize —— 横屏 + 沉浸式切系统栏时
+             别让 Activity 重建（一重建 WebView 就得重新加载整本书）。 -->
+        <activity
+            android:name=".BookPageActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode|density"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.PhotoFlipbook" />
+
+        <!-- 工作台（M3）：做一本新画册 —— Compose 原生界面 -->
+<!-- ★ 第十轮④（2026-10-09）**回滚**：封面竖屏取消 ⇒ fullSensor → sensorLandscape。
+     封面页恢复原来的横屏版面（左栏 360dp + 右侧预览 + 底部抽屉）。
+     ★ 与 MainActivity / BookPageActivity 三处保持一致，纯横屏不给自由度最安全。 -->
+
+        <activity
+            android:name=".WorkbenchActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode|density"
+            android:screenOrientation="sensorLandscape"
+            android:theme="@style/Theme.PhotoFlipbook" />
+
+        <!-- ★★ 第十五轮（2026-10-09）：**竖屏封面编辑页**（`CoverEditActivity`）。
+             佘先生：「封面编辑功能的布局不适合操作…进入封面编辑界面…竖屏的封面图片…
+                       封面图占据屏幕大部分…点击图片上的相应文字…下方弹出修改的功能条」。
+
+             ⚠ 为什么必须是**独立的 Activity**、而不是在工作台里转竖屏（`F146` 的血账）：
+               第十轮③ 我曾在 `WorkbenchActivity` 里按页签转竖屏 —— 工作台的版面
+               （左栏 360dp + 右侧跨页预览）是为**横屏**设计的，一转就挤坏，
+               他当场判「效果太差」⇒ 整体回滚。
+             ⇒ 这一页**自己声明 `portrait`**，工作台**一个方向字节都不动**。
+             ⚠ `configChanges` 带 orientation|screenSize|keyboardHidden：
+               它**恒竖屏**、键盘弹出不该重建（一重建预览 WebView 就得重新加载一次封面）。
+             ⚠ 不加 `noHistory`：返回时要能正常回来（与 PickProxyActivity 那条同理）。 -->
+        <activity
+            android:name=".CoverEditActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode|density"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.PhotoFlipbook" />
+
+        <!-- 第八轮①：竖屏的相册选择代理页（2026-10-08）。
+             佘先生：「选照片后切换的手机的相册时要求是竖屏的」。
+             ⚠ 为什么不让工作台自己锁竖屏：工作台版面是为**横屏**设计的
+               （左栏照片/封面 + 右侧放大预览）⇒ 锁竖屏会把整个做书界面挤坏。
+               只让相册这一段竖屏 ⇒ 用一个**锁竖屏、底色同工作台**的代理页去拉起系统相册。
+             ⚠ 系统照片选择器在**另一个进程**里；这台 Android 10 没有它
+               （`ACTION_PICK_IMAGES` 查无此 Activity），AndroidX 退回 `ACTION_GET_CONTENT`
+               ⇒ 弹的是 DocumentsUI，它 `fillxfill` 自己填满 display、**不继承发起方方向**。
+               ⇒ 光声明 `portrait` 没用（实测选择器窗口仍是 2340×1080 横的），
+               必须让**整个 display 转过来**，而系统只在 top Activity **不透明且有内容**时才转
+               ⇒ 所以这里用**不透明**主题 + 页面里画一层和工作台同色的底（用户看着无违和）。
+             ⚠ `configChanges` 必须带 orientation|screenSize ⇒ 切向不重建、结果不丢；
+               ⛔ 千万不要加 `noHistory`（相册一弹出本页就被销毁 ⇒ 选完没人接结果）。 -->
+        <activity
+            android:name=".PickProxyActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode|density"
+            android:screenOrientation="portrait"
+            android:excludeFromRecents="true"
+            android:noHistory="false"
+            android:theme="@style/Theme.PhotoFlipbook" />
+    </application>
+</manifest>

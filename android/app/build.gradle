@@ -1,0 +1,77 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.sheyoyo.photoflipbook'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.sheyoyo.photoflipbook"
+        minSdk 24          // 技能库建议 24，别默认 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.4.0-m4c"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+        // ★ 放开 Compose 的实验性 API —— 用到 `testTagsAsResourceId`：
+        //   它把 `Modifier.testTag` 变成 uiautomator 看得见的 `resource-id`。
+        //   不这么做，**Compose 的界面在自动化验收里是"瞎"的**（文本不进无障碍树），
+        //   只能靠像素猜坐标。
+        freeCompilerArgs += ['-opt-in=androidx.compose.ui.ExperimentalComposeUiApi']
+    }
+
+    buildFeatures { compose true }
+    composeOptions { kotlinCompilerExtensionVersion '1.5.8' }
+
+    // 资源目录沿用现有 APK 那套（书页 + 引擎都在这里），M2 再接
+    sourceSets {
+        main {
+            assets.srcDirs += ['src/main/assets']
+        }
+    }
+
+    // ★★ 必须覆盖 AAPT 的默认忽略规则
+    //   默认值里有一项 `<dir>_*` = 「**丢掉所有以 _ 开头的目录**」。
+    //   后果极隐蔽：`assets/_shell/`、将来的 `assets/_engine/` **本地文件都在、
+    //   APK 里却一个都没有** ⇒ 运行时 `AssetManager.open()` 报 FileNotFoundException，
+    //   而构建**完全成功、没有任何警告**。（我这次就是这么栽的：三个壳补丁全注入失败，
+    //   书因此退回"287×359 单页小书"，看着像版式 bug，其实是打包。）
+    //   ⇒ 去掉 `<dir>_*` 与 `.*` 那两项。
+    androidResources {
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+}
+
+dependencies {
+    def composeBom = platform('androidx.compose:compose-bom:2024.02.00')
+    implementation composeBom
+    androidTestImplementation composeBom
+
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.activity:activity-compose:1.8.2'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-graphics'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-extended'
+
+    implementation 'androidx.webkit:webkit:1.10.0'   // M2 书页 WebView 要用
+
+    debugImplementation 'androidx.compose.ui:ui-tooling'
+}
