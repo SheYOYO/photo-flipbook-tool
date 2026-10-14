@@ -73,5 +73,9 @@ dependencies {
 
     implementation 'androidx.webkit:webkit:1.10.0'   // M2 书页 WebView 要用
 
+    // ★ 2026-10-12（F164）：出书写真要按 EXIF 方向转正（浏览器显示 <img> 时会转、
+    //   BitmapFactory 不转 ⇒ 不补这一下，竖拍照片写进书里是歪的）。
+    implementation 'androidx.exifinterface:exifinterface:1.4.1'
+
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }
