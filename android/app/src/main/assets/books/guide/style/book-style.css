@@ -1,0 +1,181 @@
+@font-face{font-family:"Source Serif 4";src:url("fonts/SourceSerif4-Regular.otf.woff2") format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"Source Serif 4";src:url("fonts/SourceSerif4-It.otf.woff2") format("woff2");font-weight:400;font-style:italic;font-display:swap}
+:root{--paper:#f7f6f0;--ink:#292c26;--cloth:#7d8572;--book-serif:"Source Serif 4","Songti SC","Noto Serif CJK SC",Georgia,serif;--book-sans:Arial,Helvetica,sans-serif}
+.art-page{container-type:inline-size;position:relative;aspect-ratio:var(--page-ratio, .8);overflow:hidden;background:var(--paper) url("paper-grain.svg") repeat;color:var(--ink);font-family:var(--book-serif);font-weight:400}
+.art-page img{display:block;object-fit:contain;filter:none;border:0;border-radius:0;box-shadow:none}
+
+/* ---- 照片页：整页出血 ----
+   照片铺满整个页面，比例不合的部分裁掉（.plate 就是页面本身）。
+   裁切框中心默认略偏上，下面用 --crop-x/--crop-y 做微调，
+   不改变视觉观感，只是把主体拉回舒服的位置。 */
+.art-page.photo{background:var(--ink)}
+.art-page .plate{position:absolute;inset:0;width:100%;height:100%;margin:0;display:flex;align-items:center;justify-content:center}
+/* ★ Phase 31：中键 + 滚轮缩放照片（runtime/flipbook.js 里那段）。
+     - `transform-origin: 0 0` 是**必须的**：那段瞄点数学用的是"以左上角为原点"
+       的 p = x + s·a。默认的 50% 50% 会让整段算式全错（一放大画面就往角上蹿）。
+     - 110ms 的过渡只是让每格 1.18 倍的变化看着顺一点，与 JS 里的缩放冷却无关；
+       两个数字分别在两个文件里，改一个记得改另一个（ZOOM_TRANSITION_MS）。
+     - 页面本身有 overflow:hidden（.art-page），所以放大出去的部分是被裁掉的，
+       不会溢出到书外面去。 */
+.art-page .plate img{width:100%;height:100%;object-fit:cover;object-position:var(--crop-x, 50%) var(--crop-y, 46%);transform-origin:0 0;transition:transform 110ms ease-out}
+/* 放大期间给出 will-change，让浏览器提前把这一层提到合成层，缩放更跟手。
+   ⚠ `.zoomed` 是挂在 **`.book-page`** 上的（不是 `.plate`），选择器必须写
+     `.book-page.zoomed …`，写成 `.plate.zoomed` 会永远不命中（已踩）。
+   只挂在 `.zoomed` 上 ⇒ 静止时不多占显存。 */
+.book-page.zoomed .plate img{will-change:transform}
+/* ★★★ Phase 32：放大之后让照片**溢出这一页**，铺满整屏 ★★★
+   ----------------------------------------------------------------------------
+   佘先生：「图片放大时要全屏显示，注意不是窗口大小不变而图片只放大一部分」。
+
+   上一版（Phase 31）只做了 transform，但照片被两道"围栏"关在页面里：
+     ① `.art-page{overflow:hidden}`  —— 页面自己的裁切
+     ② 库给每页套的 `.stf__item ...{overflow:hidden}` —— 翻页库的裁切
+   于是 4 倍缩放量出来的外接矩形虽然是 2048×2560，可见的却始终只有那一小块
+   512×640 ⇒ 屏幕上一点没变大（实测读数：露在页面外 左 1536 / 上 1920 / 右 0 / 下 0，
+   即右边和下边**一像素都没超出去**）。
+
+   ⇒ 放大期把这两道围栏都放开。
+
+   ★★ 第二坑（比围栏更隐蔽）：**照片会被"隔壁那一页"整块盖住**。
+     翻页库给**每一张**软页写的 z-index 都是 `startZIndex+1`（= 11，见
+     `simpleDraw()` 里的 `z-index: ${startZIndex+1}`），而且**每帧重写** ⇒
+     同一跨页的左右两页**永远同 z**，谁压谁**只看 DOM 顺序**（页元素按 封面→图1→
+     图2→… 的顺序排在 `.stf__block` 里，索引大的后画=在上面）。
+     于是放大**左页**那张时，右页压在它上面 ⇒ 右半屏照旧显示右页原样的照片，
+     看起来就是"只放大了一部分"。
+
+     ⚠⚠ 修法只有一条路：**把 z-index 写在页元素自己身上，并且必须 `!important`**。
+        实测（`_p32_zpage.mjs`，五组写法对比）：
+          - 抬页内部（`.plate{z-index}` / `img{z-index}`）**一律无效** ——
+            谁压谁由**页元素之间**的 z 比较决定，页内部抬多高都改变不了结论
+            （`.stf__block` 的 z 是 auto、不新建层叠上下文，104 个页元素是同一层的兄弟）。
+          - `.book-page.zoomed{z-index:50}`（**不带** `!important`）→ computed 仍是 **11**，
+            整条被库的内联样式吃掉，**完全无效**（这正是上一版漏掉的那一下）。
+          - `.book-page.zoomed{z-index:50 !important}` → computed **50**，右半屏立刻归放大页 ✅。
+
+   ⚠ 这些规则全部挂在 `.zoomed` 上（由 flipbook.js 在放大期间给 `.book-page`
+     加上、复位时摘掉）⇒ **1 倍时一个字节都不生效**：静止观感、翻页动画、
+     书脊折痕、跨页过渡带，全部与 Phase 31 一模一样。
+   ⚠ `overflow:visible` 的祖先链要一路打通（item → book-page → page），
+     中间断一节，照片就还是被那一节裁掉。
+   ⚠⚠ **`!important` 不是偷懒，是必需的**：翻页库在**每一帧动画**里都会
+     `element.style.cssText = "…clip-path: polygon(…)…z-index: 11"` 重写内联样式
+     （`drawSoft()` / `simpleDraw()`，见 vendor/page-flip.browser.js），
+     而内联样式压得过任何普通选择器 ⇒ 这三条（clip-path、overflow、z-index）
+     不加 `!important` 就会被冲掉。实测踩过两次。 */
+.book-page.zoomed .stf__item{overflow:visible !important;clip-path:none !important;-webkit-clip-path:none !important}
+.book-page.zoomed .art-page{overflow:visible !important}
+.book-page.zoomed{overflow:visible !important;z-index:50 !important}
+/* ★ Phase 33：放大时还要把书页自带的几道"线条"藏掉 —— 佘先生「放大的时候不要有书脊线条」。
+   放大之后照片是铺满整屏的，但这些覆盖层仍留在页面上，于是照片上会多出：
+     ① 贴着书脊的一条竖线 —— `.photo.--left/--right::after`（实测 width:2px、content:""、
+        确实在渲染，就是它）；
+     ② 书脊侧那一段渐变压暗 —— `.art-page.--left/--right::before`
+        （防御性一起藏：它没写 content、本来就不渲染，留着免得以后有人给它补上 content）；
+     ③ 上下左右四圈暗边 —— `.outer-x` / `.outer-y` 那几个 span（实测 display:block）。
+   ⚠ 只在 `.zoomed` 期间藏 ⇒ 1 倍静止时的折痕、跨页过渡带一个像素都没变。
+   ⚠ 必须 `!important`：上面那两条伪元素规则是"3 个类 + 伪元素"，比这里的
+     "2 个类 + 伪元素"特异度高，不加 !important 会被整条吃掉。 */
+.book-page.zoomed::before,
+.book-page.zoomed::after{display:none !important}
+.book-page.zoomed .outer-x,
+.book-page.zoomed .outer-y{display:none !important}
+/* 兼容旧的版面类名：现在它们只影响裁切中心，不再改变图片大小 */
+.art-page .plate.small{--crop-y:54%}
+.art-page .plate.medium{--crop-y:46%}
+.art-page .plate.large{--crop-y:42%}
+.art-page .plate.portrait{--crop-y:40%}
+.art-page .plate.high{--crop-y:34%}
+.art-page .plate.low{--crop-y:60%}
+.art-page .plate.aside{--crop-x:62%}
+
+/* 页码直接压在照片上，用浅色保证在任何画面上都读得清 */
+.art-page.photo .folio{color:rgb(255 255 255 / 62%);text-shadow:0 1px 3px rgb(0 0 0 / 45%)}
+.art-page .folio{position:absolute;bottom:3.2%;right:5%;margin:0;font:400 1.5cqw/1 var(--book-serif);letter-spacing:0;text-transform:none}
+.art-page.verso .folio{left:5%;right:auto}
+.art-page.endpaper{background-color:#e9e9dc}
+.art-page.cloth{background:var(--cloth) url("cloth-weave.svg") repeat;color:#f2efdf}
+/* 封面文案（Phase 24：可由工作台的「封面文案」面板调节位置 / 字号 / 颜色 / 字体 / 对齐）。
+   ★ 每一处都写成 `var(--ct-<元素>-<项>, <改之前的字面量>)` —— 回退值就是旧值，
+     所以「没调过封面」的成品渲染与上一版完全相同（HTML 里连 style 属性都不写）。
+   ★ 原来用 font 简写，这里拆成 font-weight/size/line-height/family/style 六个长属性：
+     简写会顺手把 font-stretch / font-variant 等重置成初始值，拆开后那几个属性
+     改为继承 —— 本页继承链上这些值本来就是初始值，渲染一致。
+   ★ 对齐的回退值用 `start`（不是 `left`）：`start` 就是"没写 text-align 时"的行为，
+     用它才保证默认态与旧版一模一样。 */
+.art-page .cover-title{position:absolute;left:var(--ct-title-x,13.5%);right:var(--ct-title-r,10%);top:var(--ct-title-y,15%);width:var(--ct-title-w,auto);display:var(--ct-title-display,block);margin:0;font-weight:400;font-size:var(--ct-title-size,7.2cqw);line-height:1.12;font-family:var(--ct-title-family,var(--book-serif));font-style:var(--ct-title-style,normal);text-align:var(--ct-title-align,start);color:var(--ct-title-color,inherit);letter-spacing:-.02em;text-shadow:0 1px 0 rgb(29 39 25 / 12%);transform:var(--ct-title-shift,none)}
+.art-page .cover-subtitle{position:absolute;left:var(--ct-subtitle-x,13.5%);right:var(--ct-subtitle-r,auto);top:var(--ct-subtitle-y,33%);width:var(--ct-subtitle-w,auto);display:var(--ct-subtitle-display,block);margin:0;font-weight:400;font-size:var(--ct-subtitle-size,2.1cqw);line-height:1.4;font-family:var(--ct-subtitle-family,var(--book-serif));font-style:var(--ct-subtitle-style,normal);text-align:var(--ct-subtitle-align,start);color:var(--ct-subtitle-color,inherit);letter-spacing:.025em;transform:var(--ct-subtitle-shift,none)}
+.art-page .cover-plate{position:absolute;left:13.5%;bottom:18%;width:52%;margin:0;box-shadow:0 1px 1px rgb(24 33 20 / 18%)}
+.art-page .cover-plate img{width:100%;height:auto}
+.art-page .cover-foot{position:absolute;bottom:var(--ct-foot-y,7%);left:var(--ct-foot-x,13.5%);right:var(--ct-foot-r,auto);width:var(--ct-foot-w,auto);display:var(--ct-foot-display,block);font-weight:400;font-size:var(--ct-foot-size,1.6cqw);line-height:1.4;font-family:var(--ct-foot-family,var(--book-sans));font-style:var(--ct-foot-style,normal);text-align:var(--ct-foot-align,start);color:var(--ct-foot-color,inherit);letter-spacing:.13em;transform:var(--ct-foot-shift,none)}
+
+/* ---- 自定义文字框（Phase 26）----
+   佘先生：「编辑封面UI要可以增添和删减选框，选框也能够缩放」。
+   用户在工作台里自己加的框，位置/宽度/字号/字体/颜色**全部**走 `--ct-<键>-*`，
+   元素自己那段内联 style 只负责**引用**（见 make_flipbook.cover_extra_html）。
+   于是拖动、缩放这些交互跟前三个内置元素共用同一套机制 ——
+   前端不必知道哪个键是内置的、哪个是后加的。
+
+   ★ 默认墨色必须由**页面级**变量给：自定义框的键名是动态的（x1、x2…），
+     CSS 里没法为每个键各写一条默认色。照片封面上的字要浅（不然浅色照片上
+     看不清），布面封面上要深 —— 这一档差异只能挂在这儿。 */
+.art-page{--cover-extra-ink:inherit;--cover-extra-shadow:none}
+.book-page.art-page.photo{--cover-extra-ink:#f7f6f0;--cover-extra-shadow:0 1px 12px rgb(0 0 0 / 55%),0 1px 2px rgb(0 0 0 / 45%)}
+.art-page .cover-extra{position:absolute;right:auto;bottom:auto;margin:0;font-weight:400;line-height:1.4;letter-spacing:.025em}
+
+/* 满版照片封面：文字改为浅色，并压一层自左下角起的暗化遮罩。
+   没有遮罩的话，浅色照片上的白字会看不清。
+   ★ 三个元素拆成三条规则（原来是一条逗号并写）—— 因为颜色现在各读各自的
+     `--ct-*-color`。选择器权重不变（都是 4 个类），覆盖关系与原来一致。 */
+.book-page.art-page.photo .cover-title{z-index:2;color:var(--ct-title-color,#f7f6f0);text-shadow:0 1px 12px rgb(0 0 0 / 55%),0 1px 2px rgb(0 0 0 / 45%)}
+.book-page.art-page.photo .cover-subtitle{z-index:2;color:var(--ct-subtitle-color,#f7f6f0);text-shadow:0 1px 12px rgb(0 0 0 / 55%),0 1px 2px rgb(0 0 0 / 45%)}
+.book-page.art-page.photo .cover-foot{z-index:2;color:var(--ct-foot-color,#f7f6f0);text-shadow:0 1px 12px rgb(0 0 0 / 55%),0 1px 2px rgb(0 0 0 / 45%)}
+.book-page.art-page .cover-scrim{position:absolute;inset:0;z-index:1;pointer-events:none;background:linear-gradient(to top,rgb(14 16 12 / 62%) 0%,rgb(14 16 12 / 22%) 34%,transparent 62%)}
+.art-page .title-block{position:absolute;top:26%;left:16%;right:12%}
+.art-page .title-block h2{font:400 4.5cqw/1.2 var(--book-serif);letter-spacing:-.01em;margin:0 0 6cqw}
+.art-page .title-block p{font:400 2.1cqw/1.6 var(--book-serif);margin:0}
+.art-page .colophon{position:absolute;left:16%;right:18%;top:52%;font:400 2.2cqw/1.55 var(--book-serif)}
+.art-page .colophon p{margin:0 0 4cqw}
+.art-page .colophon .small-print{font:400 1.7cqw/1.65 var(--book-sans);color:#6f7268}
+.art-page .back-mark{position:absolute;bottom:10%;left:13.5%;font:400 2cqw/1.4 var(--book-serif)}
+/* The material is a background, so it never changes the photograph's pixels. */
+.book-page.art-page::after{content:none}
+
+/* ---- 跨页过渡：淡淡的纸缝感 ----
+   契约要求这两条规则存在、必须是 linear-gradient、必须 z-index:3，
+   方向 / 宽度 / 颜色都随我们定。
+
+   渐变从装订线（贴中线那侧）向外：紧贴中线处稍深（26%），
+   往后迅速转淡，到 86% 处完全透明。
+   带宽 20%（512px 页面上约 102px，两侧各一条）—— 书脊的厚度感明显，
+   但因为渐变本身是「贴中线深、向外迅速转淡」的形状，加宽后外面多出来的
+   是接近透明的部分，照片主体不会被糊掉。
+   宽度写在 styles.css 里统一控制，这里只管颜色。 */
+.book-page.art-page.--left::before{background:linear-gradient(to left,rgb(30 32 26 / 26%) 0%,rgb(30 32 26 / 10%) 22%,rgb(30 32 26 / 3%) 50%,transparent 86%)}
+.book-page.art-page.--right::before{background:linear-gradient(to right,rgb(30 32 26 / 26%) 0%,rgb(30 32 26 / 10%) 22%,rgb(30 32 26 / 3%) 50%,transparent 86%)}
+
+/* 纸缝：一条极细、半透明的暗线，正落在两张照片之间。
+   刻意压得很淡（最深处 40% 且只有 2px），凑近才看得见，
+   远看只是两页自然接在一起。 */
+.book-page.art-page.photo.--left::after{content:"";position:absolute;inset-block:0;right:0;z-index:4;width:2px;pointer-events:none;background:linear-gradient(to right,transparent,rgb(18 20 15 / 28%) 55%,rgb(18 20 15 / 40%))}
+.book-page.art-page.photo.--right::after{content:"";position:absolute;inset-block:0;left:0;z-index:4;width:2px;pointer-events:none;background:linear-gradient(to left,transparent,rgb(18 20 15 / 28%) 55%,rgb(18 20 15 / 40%))}
+
+/* ---- 照片外侧边缘的一圈淡阴影 ----
+   只加「没有和另一页相接」的那几条边：
+     左页（verso）—— 上、左、下；右页（recto）—— 上、右、下。
+   贴中线的那条边不加，那里已经交给上面的跨页过渡处理，再加就重了。
+
+   做法是两个方向各画一条极淡的黑色渐变（上 + 下 用同一个元素做不到方向相反，
+   所以上下由 outer-y 管、左右由 outer-x 管），然后靠 opacity 统一压强度。
+   目前是「只要一点」的量级：最深处约 9%。
+
+   层级：z-index:4，和纸缝线同级。两者永远不会碰面 ——
+   纸缝只在贴中线那条边上，外侧阴影只在其余三条边上，互不重叠。 */
+.book-page.art-page.photo .outer-x,
+.book-page.art-page.photo .outer-y{position:absolute;z-index:4;pointer-events:none;opacity:.72}
+.book-page.art-page.photo .outer-y{inset-inline:0;height:7%}
+.book-page.art-page.photo .outer-y.top{top:0;background:linear-gradient(to bottom,rgb(0 0 0 / 14%),transparent)}
+.book-page.art-page.photo .outer-y.bottom{bottom:0;background:linear-gradient(to top,rgb(0 0 0 / 14%),transparent)}
+.book-page.art-page.photo .outer-x{inset-block:0;width:6%}
+.book-page.art-page.photo.--left .outer-x.left{left:0;background:linear-gradient(to right,rgb(0 0 0 / 14%),transparent)}
+.book-page.art-page.photo.--right .outer-x.right{right:0;background:linear-gradient(to left,rgb(0 0 0 / 14%),transparent)}
