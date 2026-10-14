@@ -12,9 +12,12 @@
  * 音频
  * ----
  *   `/sfx/flip.mp3`（= `assets/sfx/flip.mp3`）
- *   BigSoundBank「Pages that turn #8」编号 2215，**CC0 公共领域**，
- *   作者 Joseph SARDIN，录音室录制（SoundDevices MixPre-3 + Neumann KM184）。
- *   1.55s / 224kbps / 46KB。授权与来源见 `assets/sfx/ATTRIBUTION.md`。
+ *   ★ R32（2026-10-14）换成 BigSoundBank 编号 **0164**（turned-page），**CC0 公共领域**，
+ *   作者 Joseph SARDIN。他嫌 2215 那版"不够柔和"，选中 0164 的**音色与音高**，
+ *   但嫌它**太短**（原 0.63s）⇒ 用 ffmpeg `atempo` **两级拉伸**到 0.97s、
+ *   **音高不变**（单级不能低于 0.5 倍速，故拆成 0.794×0.794）。
+ *   0.97s / 192kbps / 24KB（比原 46KB 还小一半）。
+ *   授权与来源、以及"为什么这么处理"见 `assets/sfx/ATTRIBUTION.md`。
  *
  * ★★ 为什么监听 `flip` 而不是 `changeState`
  * ------------------------------------------
@@ -58,7 +61,9 @@
 
   // ---- 可调参数（改这里就行，不用动逻辑） --------------------------------
   var SRC = '/sfx/flip.mp3';   // 相对虚拟域根（appassets.androidplatform.net）
-  var LEN_MS = 1550;           // ★ 音频全长（毫秒）。换音频要同步改这个数
+  var LEN_MS = 970;            // ★ R32：换音频了 ⇒ 同步改这个数（0164 拉伸版 ≈0.97s）
+                               //   注：下面 `loadedmetadata` 会用**实际** duration 覆盖它，
+                               //   这里只是元数据到手前的初值；填个接近的数即可。
   var VOL = 0.55;              // 音量 0~1
   var MIN_GAP = 110;           // 两次发声的最小间隔（毫秒）⇒ 连翻不叠加
   var POOL = 3;                // Audio 实例数（轮换用）

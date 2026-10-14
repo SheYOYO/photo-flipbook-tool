@@ -768,9 +768,17 @@
     '       ② 宽度 ×2/3 = 缝 26→17px、过渡带 20%→13.3%；**刻度百分比一个没动**，',
     '          峰值深度仍是 50% / 30% ⇒ 是"同一个影子变窄"，不是"换了个影子"。',
     '',
-    '   ⚠ 只挂 `.photo`（照片页）；内页/版权页不参与。',
-    '   ⚠ 放大时这两条伪元素本来就被书自己 `display:none` 掉（book-style.css:79-80）',
-    '     ⇒ 净屏放大里一个像素都不变。 */',
+'   ⚠ 2026-10-12 第三版（F162，佘先生拍板选 **A**）：**只降深度 ×0.65，几何一格不动**',
+'     （缝仍 17px、过渡带仍 13.3%、刻度百分比一个没动）。',
+'     他说前两版「连接线处的阴影过于明显」 ⇒ 峰值 50%→**33%**、30%→**20%**，',
+'     叠起来贴缝 ≈ 65% → **46%**。',
+'     ⚠ 数值不是估的：离线用真书渲染 + 「关掉阴影」作零点，量亮度剖面',
+'       （`tools/_gutter_probe.mjs` + `tools/_gut_analyze.py`）：',
+'         缝心暗度 59.2（现状）→ 41.4（A，−30%）｜B 29.5（−50%）｜C 21.0（−65%）。',
+'   ⚠ 只挂 `.photo`（照片页）；内页/版权页不参与。',
+'   ⚠ 放大时这两条伪元素本来就被书自己 `display:none` 掉（book-style.css:79-80）',
+'     ⇒ 净屏放大里一个像素都不变。',
+'   ⚠ 封面那条例外见下面第 **19b) 条**。 */',
     '/* ⚠⚠⚠ 本文件是「用 JS 字符串拼出来的 CSS」，注释里**绝不能**出现',
     '       一个星号紧接着一个斜杠 —— 那正是 CSS 注释的结束符。',
     '       实测踩过（F107 / 2026-10-05）：正文里一个加粗词组的收尾 ** 后面接了个斜杠，',
@@ -787,8 +795,8 @@
     '  z-index: 4 !important; pointer-events: none !important;',
     '  width: 17px !important;',
     '  background: linear-gradient(to right,',
-    '    rgba(16,18,13,0) 0%, rgba(16,18,13,.05) 18%, rgba(16,18,13,.13) 42%,',
-    '    rgba(16,18,13,.26) 68%, rgba(16,18,13,.41) 87%, rgba(16,18,13,.50) 100%) !important;',
+'    rgba(16,18,13,0) 0%, rgba(16,18,13,.03) 18%, rgba(16,18,13,.08) 42%,',
+'    rgba(16,18,13,.17) 68%, rgba(16,18,13,.27) 87%, rgba(16,18,13,.33) 100%) !important;',
     '}',
     '.book-page.art-page.photo.--right::after {',
     '  content: "" !important;',
@@ -798,8 +806,8 @@
     '  z-index: 4 !important; pointer-events: none !important;',
     '  width: 17px !important;',
     '  background: linear-gradient(to left,',
-    '    rgba(16,18,13,0) 0%, rgba(16,18,13,.05) 18%, rgba(16,18,13,.13) 42%,',
-    '    rgba(16,18,13,.26) 68%, rgba(16,18,13,.41) 87%, rgba(16,18,13,.50) 100%) !important;',
+'    rgba(16,18,13,0) 0%, rgba(16,18,13,.03) 18%, rgba(16,18,13,.08) 42%,',
+'    rgba(16,18,13,.17) 68%, rgba(16,18,13,.27) 87%, rgba(16,18,13,.33) 100%) !important;',
     '}',
     '.book-page.art-page.photo.--left::before {',
     '  content: "" !important;',
@@ -809,8 +817,8 @@
     '  z-index: 3 !important; pointer-events: none !important;',
     '  width: 13.3% !important;',
     '  background: linear-gradient(to left,',
-    '    rgba(28,30,24,.30) 0%, rgba(28,30,24,.16) 13%, rgba(28,30,24,.07) 32%,',
-    '    rgba(28,30,24,.018) 58%, rgba(28,30,24,0) 88%) !important;',
+'    rgba(28,30,24,.20) 0%, rgba(28,30,24,.10) 13%, rgba(28,30,24,.05) 32%,',
+'    rgba(28,30,24,.01) 58%, rgba(28,30,24,0) 88%) !important;',
     '}',
     '.book-page.art-page.photo.--right::before {',
     '  content: "" !important;',
@@ -819,10 +827,36 @@
     '  left: 0 !important; right: auto !important;',
     '  z-index: 3 !important; pointer-events: none !important;',
     '  width: 13.3% !important;',
-    '  background: linear-gradient(to right,',
-    '    rgba(28,30,24,.30) 0%, rgba(28,30,24,.16) 13%, rgba(28,30,24,.07) 32%,',
-    '    rgba(28,30,24,.018) 58%, rgba(28,30,24,0) 88%) !important;',
-    '}',
+'  background: linear-gradient(to right,',
+'    rgba(28,30,24,.20) 0%, rgba(28,30,24,.10) 13%, rgba(28,30,24,.05) 32%,',
+'    rgba(28,30,24,.01) 58%, rgba(28,30,24,0) 88%) !important;',
+'}',
+'',
+/* 19b) ★★ 2026-10-12（F162）：**封面不要书缝那条阴影**。
+ *   佘先生：「封面不需要有书缝处的阴影，即左侧的阴影」。
+ *
+ *   ★ 为什么封面会有"左侧的阴影"（机理，本轮才查清，之前没人写下过）：
+ *     `--left` / `--right` **不是书写的、也不是壳加的**，是**翻页库自己加的** ——
+ *     `books/book1/vendor/page-flip.browser.js` 里 `setOrientation()` 干的事：
+ *          classList.add(1 === t ? "--right" : "--left")     // 1=右页, 0=左页
+ *     它按**当前跨页**动态赋类：左页拿 `--left`、右页拿 `--right`。
+ *     而 `buildPageSequence` 里 `showCover` 让**封面（index 0）独占第一格**，
+ *     库把它当**右页** ⇒ 拿到 `--right` ⇒ 上面第 19) 条那个 `::after` 就落在
+ *     `left: 0` ⇒ 阴影正好压在**封面的左缘**。这就是他看到的"左侧的阴影"。
+ *
+ *   ⚠⚠ 选择器必须**凑到 4 级**（带上 `.photo`）：
+ *     第 19) 条是 `.book-page.art-page.photo.--right::after`（4 个类 = 0,4,0）；
+ *     若这里只写 `.book-page.art-page[aria-label=...]`（2 类 + 1 属性 = 0,3,0），
+ *     特异性不够 ⇒ 被它压过 ⇒ **规则"写了等于没写"**（本轮第一版就踩了：
+ *     两张截图逐像素完全相同，靠比对才发现）。写成 3 类 + 1 属性 = 同级，靠"后出现"胜出。
+ *
+ *   ⚠ 只关**伪元素**（书缝那两条）；外侧那圈淡阴影是 `.outer-x` / `.outer-y`
+ *     两个真元素（template.js 的 `outerShadowHtml`），**不受影响、也不该去掉** ——
+ *     合上的书本来就该在外缘有一点点投影。 */
+'.book-page.art-page.photo[aria-label="封面"]::after,',
+'.book-page.art-page.photo[aria-label="封面"]::before {',
+'  background: none !important;',
+'}',
 
     /* 20) ★★ 2026-10-08（第五轮 F132）：**新内核下「点全屏」不再触发书的"净屏放大"**。
      *
@@ -876,6 +910,37 @@
      */
     '.art-page .back-mark,',
     '.art-page .colophon {',
+    '  display: none !important;',
+    '}',
+
+    /* ------------------------------------------------------------
+       20b) 第二十二轮（2026-10-11）：版权页那格 → 与封底同款布面
+       ------------------------------------------------------------
+     * 佘先生：「书的最后一页，就是后壳的前一页，不能有空白页，
+     *   要求这一页和后壳的样式相同」（他拍板：**整页做成布面**）。
+     *
+     * 为什么真机上看着"一片空白"：就是紧邻上面的第 20) 条 —— `.colophon` 整块
+     *   `display:none` 之后，那格只剩一张米色纸。页序是
+     *   `封面 → 图… → 版权页 → 封底`，所以"后壳的前一页"正是它。
+     *
+     * ⛔ 页序 / 页数 / 节点结构**一个字不动**：增删页都会改动翻页库的跨页账本
+     *   （本项目最贵的一课：任何"凑页数"都会自己凑出一个两面对白的跨页）。
+     *   这里只在壳层**盖一层布面** —— 用的是书自带样式里封底 `.art-page.cloth`
+     *   那两样东西：`--cloth` 与 `cloth-weave.svg`（`style/book-style.css`）。
+     *   ⚠ 本规则注入到**文档**里的 `<style>` ⇒ 相对 URL 按 `index.html` 解析，
+     *     必须写 `style/cloth-weave.svg`（不能照抄书里那份的裸 `cloth-weave.svg`）。
+     *   ⚠ 底下垫实色 `#7d8572`：万一纹样图取不到，也只是少了织纹，不会又变回白纸。
+     *   ⚠ 页码一起藏掉：真机上的封底**没有页码**（第 20) 条口径），
+     *     要求"样式相同"就不该单留一个浅色数字躺在布面上。
+     *   ⚠ 只认 `aria-label="版权页"` 这一种标记 —— 引擎渲染 `kind:'colophon'`
+     *     时写的就是它（`_engine/template.js`）；本规则匹配不到时是**空操作**，
+     *     不会误伤别的页。
+     */
+    '.book-page.art-page[aria-label="版权页"] {',
+    '  background: var(--cloth, #7d8572) url("style/cloth-weave.svg") repeat !important;',
+    '  color: #f2efdf !important;',
+    '}',
+    '.book-page.art-page[aria-label="版权页"] .folio {',
     '  display: none !important;',
     '}',
 

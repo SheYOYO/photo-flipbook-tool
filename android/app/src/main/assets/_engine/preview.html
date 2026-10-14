@@ -18,7 +18,7 @@
     `.stage { container-type: size }` —— **这条链不依赖 aspect-ratio**。
     ⇒ 少任何一层，高度就是 0、用户看到的是一片空白。（我在 M2 上栽过两次，正解就在旧工程 bridge.js 里。）
 -->
-<link rel="stylesheet" href="/books/book1/styles.css">
+<link rel="stylesheet" href="/books/guide/styles.css">
 <style>
   /* ⚠ 书页那套 styles.css 是给"成品书的 body 结构"写的，引进来会连带把 html/body 的高度带偏
      （实测 `html` 被带成 **0px** ⇒ `body{height:100%}` 也是 0 ⇒ compat.js 量到 availH=8px
@@ -117,7 +117,7 @@
   var bookEl = document.getElementById('book');
   var statusEl = document.getElementById('status');
 
-  var state = { pages: [], photos: [], payload: null, index: 0, bad: 0,
+  var state = { pages: [], photos: [], payload: null, index: 0, bad: 0, badNames: [],
                 autoPlates: {}, autoPos: {} };
 
   /* 版面档位（M4c）——
@@ -227,26 +227,122 @@
     statusEl.className = bad ? 'bad' : '';
   }
 
-  /** 用 canvas 把一张图读成 RGB 像素 —— 引擎（probe）要的就是这个。
-   *  ⚠ 大图一次性 getImageData 很吃内存，所以**逐张处理、用完立刻把 canvas 归零**。 */
+  /**
+   * ★ F164：本页的图**挂了要说出来**（见 showPage 里那段注释）。
+   * ⚠ 只加监听、不拦加载：正常路径上一个字节都不多花。
+   */
+  function guardPageImages() {
+    var imgs = bookEl.querySelectorAll('img'), i, im;
+    for (i = 0; i < imgs.length; i++) {
+      im = imgs[i];
+      if (im.__pvGuarded) { continue; }
+      im.__pvGuarded = true;
+      im.addEventListener('error', function () {
+        var src = this.getAttribute('src') || '';
+        if (src.indexOf('__pvretry=1') < 0) {
+          // 再试一次（换个 URL 绕开可能的缓存/瞬时解码失败）
+          this.src = src + (src.indexOf('?') < 0 ? '?' : '&') + '__pvretry=1';
+          return;
+        }
+        say('这张图没加载出来：' + src + '（可退出重进，或换一张）', true);
+      });
+    }
+  }
+
+  /** ★★ 2026-10-12（F162）：把大图读成 RGB 的**条带式**通道。
+   *
+   * 为什么非改不可（实测，见 `tools/_preview_bench.mjs`）：
+   *   老写法是"整张一次到位" —— canvas 按**原始像素尺寸**建（4032×3024），
+   *   再 `getImageData(0,0,w,h)` **一次分配 w*h*4 = 48.8MB**，
+   *   然后又拷一份 `w*h*3` 的 Uint8Array（36.6MB）。
+   *   实测**单张峰值 JS 堆 247MB**（12MP）；`render()` 又是**逐张串行** ⇒
+   *   100 张就是 100 次分配风暴：**桌面 Chrome 18.5 秒**，手机上极易把
+   *   WebView 的渲染进程拖到被系统回收（=> Kotlin 侧 `onRenderProcessGone`
+   *   => 界面上那句「预览暂时打不开」），或者干脆解不开 => 「N 张读不出来」。
+   *
+   *   实测对照：同样 100 张、但只有 1280×900 时是 **2.1 秒 / 70MB**
+   *   ⇒ 开销与"照片的真实像素数"成正比，与张数线性叠加。
+   *
+   * 改法要点（三条，缺一不可）：
+   *   ① **canvas 只开条带那么高**（w × 128 行），用 `drawImage` 的
+   *      九参形式 `drawImage(img, sx,sy,sw,sh, dx,dy,dw,dh)` **只搬这一条带进来**。
+   *      因为 sw==dw、sh==dh 是** 1:1 搬**、不做缩放 ⇒
+   *      **像素值与"整张一次画完"逐字节相同**（已用真图比对过，见 tools/_rgb_parity.mjs）
+   *      ⇒ `probe` 的那一套数字不变 ⇒ 与链①（电脑端）的"逐像素一致"仍然成立。
+   *   ② **canvas 复用**（不再每张 new 一个），并在条带粒度上反复写同一块显存。
+   *   ③ **解完立刻放开位图**（`img.src=''`），别让 48MB 的解码结果多活一帧。
+   * ⇒ 峰值从 w*h*4（48.8MB）降到 strip*w*4（~2MB）。
+   *
+   * ⚠ 实测口径要说清（别自己骗自己）：`performance.memory.usedJSHeapSize`
+   *   只算 **JS 堆**，canvas 的 backing store 与 ImageData 有一部分记在"外部内存"里，
+   *   所以账面上只看到 **247.9MB → 215.8MB（−13%）**；
+   *   真正砍掉的是**外部**那两块：canvas 48.8MB + ImageData 48.8MB ⇒ 各 2MB。
+   *   （对照实验：`node tools/_preview_bench.mjs <照片目录> 100 --html=<改前那份 preview.html>`）
+   */
+  /* 条带画布的**字节预算**：不写死"多少行"，而是按"这张图多宽"反推，
+     让条带画布恒定在 ~2MB（12MP 的图 ⇒ 4032 宽 ⇒ 130 行；小图则整张一次带走）。
+     ⚠ 预算开大没有好处：实测 8MB（4032 宽 ⇒ 520 行）与 2MB（130 行）
+       **耗时一样**（18.4s vs 19.0s / 100 张，差异在噪声里），
+       但峰值内存反而更高 ⇒ **取小的那个**。 */
+  var RGB_STRIP_BUDGET = 2 * 1024 * 1024;
+  function stripRows(w, h) {
+    var rows = Math.floor(RGB_STRIP_BUDGET / (w * 4));
+    if (!(rows > 0)) { rows = 64; }
+    if (rows > 1024) { rows = 1024; }
+    if (rows > h) { rows = h; }
+    return rows;
+  }
+  /* ⚠ 试过但**撤回**的一招（留个记号，免得以后又想到它）：**复用 rgb 缓冲区**。
+     想法是"每张都 new 一个 36MB 数组太浪费" ⇒ 改成只往上长、一直复用。
+     实测峰值反而从 216MB 涨到 248MB（复用区被提拔到老生代，堆只会更大），
+     而且读完之后那块内存还**赖着不走**。⇒ 按"优先减法"撤掉，回到每张一个数组、用完即弃。 */
+
+  /* ★★ F166：探针结果缓存（照片指纹 → 宽高 + probe 算出的三个数）。
+     页面级：页面不重载就一直有效 ⇒ 换封面/拖排序/改档位都不再解码照片。
+     ⚠ 只在 `render()` 里读写；五个数全是 `probe()` 的**输出**，命中即逐位相同。 */
+  var _probeCache = Object.create(null);
+
+  var _rgbCv = null, _rgbCtx = null;
+  function rgbStripCtx(w, sh) {
+    if (!_rgbCv) {
+      _rgbCv = document.createElement('canvas');
+      // ⚠ willReadFrequently 只有新内核认；老内核（真机 Chrome 83）会**忽略这个第二参数**，
+      //   所以后面再兜一次无参调用 —— 两种内核都能拿到 2d 上下文。
+      _rgbCtx = _rgbCv.getContext('2d', { willReadFrequently: true }) || _rgbCv.getContext('2d');
+    }
+    if (!_rgbCtx) { throw new Error('拿不到 2d 上下文'); }
+    if (_rgbCv.width !== w || _rgbCv.height !== sh) {
+      _rgbCv.width = w; _rgbCv.height = sh;      // 改尺寸会顺带把画布清干净
+    }
+    return _rgbCtx;
+  }
+
+  /** 用 canvas 把一张图读成 RGB 像素 —— 引擎（probe）要的就是这个。 */
   function decodeRGB(url) {
     return new Promise(function (resolve, reject) {
       var img = new Image();
       img.onload = function () {
         try {
           var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-          var cv = document.createElement('canvas');
-          cv.width = w; cv.height = h;
-          var ctx = cv.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          var d = ctx.getImageData(0, 0, w, h).data;
-          var rgb = new Uint8Array(w * h * 3), j = 0, k;
-          for (k = 0; k < d.length; k += 4) {
-            rgb[j++] = d[k]; rgb[j++] = d[k + 1]; rgb[j++] = d[k + 2];
+          if (!(w > 0 && h > 0)) { throw new Error('尺寸不对：' + w + 'x' + h); }
+          var rgb = new Uint8Array(w * h * 3);
+          var sh = stripRows(w, h);
+          var ctx = rgbStripCtx(w, sh);
+          for (var y = 0; y < h; y += sh) {
+            var rows = Math.min(sh, h - y);
+            ctx.clearRect(0, 0, w, rows);
+            ctx.drawImage(img, 0, y, w, rows, 0, 0, w, rows);
+            var d = ctx.getImageData(0, 0, w, rows).data;
+            var j = y * w * 3, k, n = d.length;
+            for (k = 0; k < n; k += 4) {
+              rgb[j++] = d[k]; rgb[j++] = d[k + 1]; rgb[j++] = d[k + 2];
+            }
           }
-          cv.width = 0; cv.height = 0;
           resolve({ w: w, h: h, rgb: rgb });
-        } catch (e) { reject(e); }
+        } catch (e) { reject(e); } finally {
+          // ③ 早点放开解码出来的位图（12MP 一张约 48MB）—— 不等 GC 自己想起来
+          try { img.onload = null; img.onerror = null; img.src = ''; } catch (e2) { /* 忽略 */ }
+        }
       };
       img.onerror = function () { reject(new Error('这张读不出来：' + url)); };
       img.src = url;
@@ -269,7 +365,7 @@
        *   ⚠ 换法必须**在渲染出来之后、只动那一个节点**，不能改引擎（一字不许改）。
        *   ⚠ 没设 `footText`（或设成空）⇒ **保持引擎原样**，一个字都不动。 */
       body = TP.pageHtml(pages[k], pay.title || '', pay.subtitle || '',
-                         state.photos.length, pay.coverText || {});
+                         (state.totalPhotos || state.photos.length), pay.coverText || {});
       if (pay.footText) {
         body = replaceFootText(body, pay.footText);
       }
@@ -278,7 +374,15 @@
            + '这一页渲染失败：' + (e && e.message ? e.message : e) + '</div>';
     }
     bookEl.innerHTML = body;
+    /* ★★ 2026-10-12（F164）：**图挂了要看得见**（佘先生报「在封面加载不出来」，
+       而老路子上一张 <img> 加载失败是彻底的静默 —— 不报错、不记名，
+       用户只看到一块布，排查只能靠猜）。
+       做法：给本页每张图挂一次性 error 监听 —— 先带 `__retry=1` **重试一次**
+       （绕开设备上可能的瞬时解码失败），再失败就把**文件名**写进状态行。 */
+    guardPageImages();
     bindCoverPick();
+    /* ★ R30：innerHTML 重建后封面图是**新节点** ⇒ 把取景重新贴上去。 */
+    try { if (window.__cpPhoto) { window.__cpPhoto.apply(); } } catch (e) { /* 忽略 */ }
     /* ★ 第七轮：innerHTML 重建后把「正在发亮的那一个」重新点亮
      *   （状态在 state 里，不重画就会丢）。 */
     if (state.activeCt) { markActiveExtra(state.activeCt); }
@@ -286,8 +390,18 @@
     //   （它监听 resize；不派发的话它量到的还是"空壳"，书高依旧是 0）
     fixStageSize();
     try { window.dispatchEvent(new Event('resize')); } catch (e) { /* 忽略 */ }
-    say('第 ' + (k + 1) + ' / ' + pages.length + ' 页'
-        + (state.bad ? '（' + state.bad + ' 张读不出来）' : ''));
+    /* ★ F162：状态那一行也带上名字（最多两条，别把这一行撑爆）。
+     *   他看到的是"哪几张"而不是一个孤零零的数字 ⇒ 一眼就知道是不是同一批/同一格式。 */
+    var badTip = '';
+    if (state.bad) {
+      badTip = '（' + state.bad + ' 张读不出来';
+      if (state.badNames && state.badNames.length) {
+        badTip += '：' + state.badNames.slice(0, 2).join('、')
+                + (state.badNames.length > 2 ? ' 等' : '');
+      }
+      badTip += '）';
+    }
+    say('第 ' + (k + 1) + ' / ' + pages.length + ' 页' + badTip);
   }
 
   /**
@@ -331,7 +445,7 @@
    *
    * ⚠⚠ **只在工作台预览里画，出书后的成品书上不画** ——
    *   佘先生定的是「只在工作台预览里显示」。做法：这段 CSS 只由 `preview.html` 注入，
-   *   而成品书走的是 `books/book1/` 那一套静态文件，**它压根加载不到这段样式**。
+   *   而成品书走的是 `books/guide/` 那一套静态文件，**它压根加载不到这段样式**。
    *   ⇒ 结构上就不可能漏到成品书上，不需要"出书前再撤一次"那种易漏的做法。
    *
    * ⚠ 用 `outline` 而不是 `border`：border 会**占掉盒模型的高度**，
@@ -460,11 +574,83 @@
   }
 
   /**
+   * ★ 2026-10-11（佘先生：封面编辑的字体组块要能「引入外部字体」）：
+   *   把「用户字体库」清单喂进来 ——
+   *     ① 注入 `@font-face`（字体文件由 App 的 `/fonts/` 路径处理器提供）；
+   *     ② 调引擎**公开**的 `setFontFamilies`，把 `ufN → 字体名` 并进白名单。
+   *
+   * ⚠ 引擎 `setFontFamilies(map)` 是**叠加**语义（`availableFontFamilies()` 先铺内置四项，
+   *   再用这张表覆盖）⇒ 这里**只传用户那几条**，内置 `serif/hei/song/kai` 一个字都不用重复。
+   * ⚠ 必须在**渲染封面之前**调 —— 封面文案的 `--ct-*-family` 就是按这张表算出来的。
+   * ⚠ 引擎四颗 JS（`template.js` 等）**一个字没改**，用的全是它已导出的公开接口。
+   */
+  var _userFontMap = null;
+  function applyUserFonts(list) {
+    state.userFonts = list || [];
+    var id = 'pv-user-fonts';
+    var old = document.getElementById(id);
+    if (old && old.parentNode) { old.parentNode.removeChild(old); }
+    var css = '', map = {}, i;
+    for (i = 0; i < state.userFonts.length; i++) {
+      var f = state.userFonts[i];
+      if (!f || !f.key || !f.url) { continue; }
+      var ext = String(f.url.split('.').pop() || '').toLowerCase();
+      var fmt = ext === 'otf' ? 'opentype' : ext === 'woff' ? 'woff'
+              : ext === 'woff2' ? 'woff2' : 'truetype';
+      css += '@font-face{font-family:\'' + f.name + '\';src:url(\'' + f.url
+           + '\') format(\'' + fmt + '\');font-display:swap}';
+      map[f.key] = '\'' + f.name + '\'';
+    }
+    if (css) {
+      var st = document.createElement('style');
+      st.id = id; st.textContent = css;
+      document.head.appendChild(st);
+    }
+    _userFontMap = map;
+    try { if (TP && TP.setFontFamilies) { TP.setFontFamilies(map); } }
+    catch (e) { /* 老内核也不该拖垮渲染 */ }
+  }
+
+  /**
+   * 封面文案里**用到了哪些用户字体** —— 出书时要把这几支字体**带上**（佘先生明确要求：
+   *   用了外部字体的画册，传播出去别人也要能直接翻）。
+   * 返回 `[{key,name,file}]`；`file` 从字体 URL 的末段取。
+   */
+  function usedUserFonts() {
+    var pay = state.payload || {}, cover = pay.coverText || {};
+    var lib = state.userFonts || [], want = {}, i, k, out = [];
+    for (k in cover) {
+      if (!Object.prototype.hasOwnProperty.call(cover, k)) { continue; }
+      var f = cover[k] && cover[k].font;
+      if (f && /^uf\d+$/.test(f)) { want[f] = 1; }
+    }
+    for (i = 0; i < lib.length; i++) {
+      var uf = lib[i];
+      if (uf && want[uf.key]) {
+        out.push({ key: uf.key, name: uf.name, file: decodeURIComponent(String(uf.url).split('/').pop()) });
+      }
+    }
+    return out;
+  }
+
+  /**
    * 主入口：Kotlin 把照片清单丢进来，这里跑引擎、渲染第一页。
-   * payload = { photos: [{order, name, url}], title, subtitle, coverText }
+   * payload = { photos: [{order, name, url}], title, subtitle, coverText, userFonts }
    */
   function render(payload) {
     state.payload = payload || {};
+    /* ★ R30b：封面照片取景跟着 payload 走 —— 冷启动恢复草稿时由 Kotlin 一并带过来
+       （只认非默认值；没有这个字段就保持当前 CP，绝不把已调好的取景悄悄还原）。 */
+    try {
+      var cpv0 = (payload && payload.coverPhotoView) || null;
+      if (cpv0 && typeof cpv0.x === 'number' && typeof cpv0.y === 'number') {
+        CP.x = cpv0.x;
+        CP.y = cpv0.y;
+        CP.z = clamp(cpv0.z || 1, 1, 4);
+      }
+    } catch (e) { /* 忽略：取景不是主流程，坏了也不该挡住出书 */ }
+    /* ★ 2026-10-11：用户字体**先就位**（注入 @font-face + 并进白名单），再渲染封面。 */
+    applyUserFonts((payload && payload.userFonts) || []);
     /* ★ 2026-10-08（第六轮）：`render()` 是**整包替换** state.payload，
      *   而工作台那条重算 `LaunchedEffect`（拖拽排序 / 改档位后）会重新 render
      *   ⇒ 不保住 `footText` 的话，**用户改过的页脚会被悄悄还原**。
@@ -472,6 +658,19 @@
     if (state.lastFootText) { state.payload.footText = state.lastFootText; }
     var list = (payload && payload.photos) || [];
     state.bad = 0;
+    /* ★★ 2026-10-12（F164）：**只画封面时只探封面那一张** —— 佘先生报「在封面加载不出来」。
+     *
+     *   老路子不管是不是封面模式，都把整批照片**逐张全尺寸解码**一遍
+     *   （桌面实测 90 张 = 19.5 s，手机上几分钟）。而在这段时间里
+     *     · `state.pages` 还是空的 ⇒ `showPage()` 什么都不画
+     *     · 屏幕上就是**一片空白**（封面编辑页连"正在准备封面"都过去了）
+     *   ⇒ 用户看到的就是「封面加载不出来」。
+     *
+     *   封面**只会用 `photos[0]`**（见 buildPages 那两行）⇒ 只探它一张，封面秒出。
+     *   ⚠ 页脚那行「N PHOTOGRAPHS」必须用**真实张数** ⇒ 记在 state.totalPhotos。 */
+    state.totalPhotos = list.length;
+    var probeList = (coverOnlyMode() && list.length > 1) ? [list[0]] : list;
+    if (probeList !== list) { say('正在读封面那张…'); }
     if (!list.length) {
       state.pages = []; state.photos = [];
       bookEl.innerHTML = '<div style="padding:0 30px;text-align:center;color:#9a9a90;'
@@ -481,36 +680,102 @@
       report({ ok: true, photos: 0, pages: 0, empty: true });
       return;
     }
-    var photos = [], i = 0;
-    say('正在读照片 0 / ' + list.length);
+    var photos = [], i = 0, badNames = [];
+    say('正在读照片 0 / ' + probeList.length);
 
-    function step() {
-      if (i >= list.length) { finish(photos); return; }
-      var p = list[i];
-      decodeRGB(p.url).then(function (got) {
-        try {
-          var f = PR.probe(got.rgb, got.w, got.h);
-          photos.push({
-            order: p.order, name: p.name, path: p.url,
-            width: got.w, height: got.h,
-            orientation: RU.orientationOf(got.w, got.h),
-            plate: null, position: null,
-            mean_lum: f.mean_lum, warmth: f.warmth, sharpness: f.sharpness
-          });
-        } catch (e) { state.bad++; }
-        i++; say('正在读照片 ' + i + ' / ' + list.length);
-        setTimeout(step, 0);                 // 让出一帧，界面不至于假死
-      }, function () {
-        state.bad++; i++; setTimeout(step, 0);
+    /**
+     * ★ 2026-10-12（F162）：失败**记名字**，不再只记一个数。
+     *   老写法只有 `state.bad++` ⇒ 界面上永远是「N 张读不出来」，
+     *   谁也不知道"到底是哪 N 张" ⇒ 排查只能靠猜（这正是本次"识别失败"最难定位的地方）。
+     *   ⚠ 名字来源优先用 payload 里的 `name`（Kotlin 传的是文件名），拿不到再退回序号。
+     */
+    function noteBad(p) {
+      state.bad++;
+      var nm = (p && p.name) ? String(p.name) : ('第 ' + (i + 1) + ' 张');
+      if (badNames.length < 8) { badNames.push(nm); }     // 够用了，别把回报撑爆
+    }
+
+    /**
+     * ★★ F166（2026-10-13）：**探针结果缓存** —— 换封面/拖排序时一张照片都不用重解。
+     *
+     * 为什么非加不可（他报「换张封面图片，读取九十张要两分钟」）：
+     *   封面 = `photos[0]`（序号 1 那张）⇒ 换封面 = 把某张拖到第 1 位
+     *   ⇒ 全部照片的 `order` 重排 ⇒ Kotlin 侧 `fingerprint` 变 ⇒ 重新 `render()`
+     *   ⇒ 老路子把 **90 张原图全部解码一遍**（`decodeRGB` 逐像素），实测两分钟。
+     *
+     *   但**照片本身一张都没变** —— 亮度/色温/锐度这仨数只跟照片内容有关，
+     *   跟它排在第几位**毫无关系** ⇒ 顺序一变就重算纯属浪费。
+     *
+     * 缓存什么：`probe()` 算出的三个数 + 宽高（五个数字，与"逐像素一致"契约无关取舍）。
+     * ⚠ **不改变引擎结果**：缓存的是 `probe()` 的**输出**，不是跳步算出来的近似值 ——
+     *   命中时那五个数与真解码逐位相同 ⇒ 排版（`assignPlates`/`buildPageSequence`）一模一样。
+     *
+     * 失效：`stamp`（Kotlin 给的长度+修改时间）进键 ⇒ 照片被替换 ⇒ 键变 ⇒ 自动重解，
+     *   **绝不会拿旧数据冒充新图**。内置素材没 stamp ⇒ 用 key（随包不变，恒命中，正合适）。
+     */
+    function probeKey(p) {
+      return String(p.url || '') + '#' + String(p.stamp || '');
+    }
+    function pushProbed(p, w, h, f) {
+      photos.push({
+        order: p.order, name: p.name, path: p.url,
+        width: w, height: h,
+        orientation: RU.orientationOf(w, h),
+        plate: null, position: null,
+        mean_lum: f.mean_lum, warmth: f.warmth, sharpness: f.sharpness
       });
     }
 
-    function finish(photos) {
+    /* ★ 快路：**全部命中缓存** ⇒ 同步一口气跑完，连 `setTimeout` 让帧都不要。
+       这就是"换封面"要的速度 —— 一张都不解，只重排版（毫秒级）。
+       ⚠ 只在"真的一张都不用解"时走它；但凡有一张没命中，就退回老路逐张解码。 */
+    var allHit = probeList.length > 0;
+    for (var j = 0; j < probeList.length; j++) {
+      if (!_probeCache[probeKey(probeList[j])]) { allHit = false; break; }
+    }
+    if (allHit) {
+      for (var j2 = 0; j2 < probeList.length; j2++) {
+        var q = probeList[j2], c = _probeCache[probeKey(q)];
+        try { pushProbed(q, c.w, c.h, c); } catch (e0) { noteBad(q); }
+      }
+      say('正在排版…');
+      finish(photos, badNames);
+      return;
+    }
+
+    function step() {
+      if (i >= probeList.length) { finish(photos, badNames); return; }
+      var p = probeList[i];
+      var ck = probeKey(p);
+      var hit = _probeCache[ck];
+      if (hit) {                                   // 命中 ⇒ 不解码，直接拿五个数
+        try { pushProbed(p, hit.w, hit.h, hit); } catch (e1) { noteBad(p); }
+        i++; say('正在读照片 ' + i + ' / ' + probeList.length);
+        setTimeout(step, 0);
+        return;
+      }
+      decodeRGB(p.url).then(function (got) {
+        try {
+          var f = PR.probe(got.rgb, got.w, got.h);
+          _probeCache[ck] = { w: got.w, h: got.h,      // 记下来，下次这张不用再解
+            mean_lum: f.mean_lum, warmth: f.warmth, sharpness: f.sharpness };
+          pushProbed(p, got.w, got.h, f);
+        } catch (e) { noteBad(p); }
+        i++; say('正在读照片 ' + i + ' / ' + probeList.length);
+        setTimeout(step, 0);                 // 让出一帧，界面不至于假死
+      }, function () {
+        noteBad(p); i++; setTimeout(step, 0);
+      });
+    }
+
+    function finish(photos, badNames) {
+      state.badNames = badNames || [];
       if (!photos.length) {
         bookEl.innerHTML = '<div style="padding:30px;color:#b3261e;font:13px/1.6 sans-serif">'
-          + '这些照片都读不出来</div>';
+          + '这些照片都读不出来'
+          + (state.badNames.length ? '<br>' + state.badNames.join('<br>') : '') + '</div>';
         say('照片都读不出来', true);
-        report({ ok: false, error: '全部读不出来', photos: 0, pages: 0 });
+        report({ ok: false, error: '全部读不出来', photos: 0, pages: 0, badNames: state.badNames });
         return;
       }
       try {
@@ -534,6 +799,8 @@
         showPage();
         report({
           ok: true, photos: photos.length, pages: state.pages.length, bad: state.bad,
+          // ★ F162：把"读不出来的是哪几张"一起回报，Kotlin 侧才能说人话
+          badNames: state.badNames,
           firstKind: state.pages.length ? String(state.pages[0].kind || '') : '',
           plates: platesOf()
         });
@@ -572,7 +839,7 @@
   // 出书（M5）—— 与电脑端链① 同一份模板，交给 Kotlin 落盘
   // ==========================================================================
 
-  /** 照 `book1/book-plan.json` 的字段名写 —— `BookStore.read()` 靠它取书名与封面。 */
+  /** 照 `guide/book-plan.json` 的字段名写 —— `BookStore.read()` 靠它取书名与封面。 */
   function buildBookPlan() {
     var ph = state.photos || [], out = [], i;
     for (i = 0; i < ph.length; i++) {
@@ -600,34 +867,29 @@
       photo_count: ph.length,
       page_count: (state.pages || []).length,
       cover_text: pay.coverText || {},
+      /* ★ R30：封面照片取景（没调过就不写这个字段 ⇒ 老书/默认行为逐字节不变）。 */
+      cover_photo_view: (function () {
+        try { return (window.__cpPhoto && window.__cpPhoto.changed()) ? window.__cpPhoto.get() : null; }
+        catch (e) { return null; }
+      })(),
+      /* ★ 2026-10-11：这一本**用到的用户字体**（App 侧据此把字体拷进书目录、并写 user-fonts.css）
+         —— 佘先生要求「用了外部字体的画册，传给别人也要能直接翻」。 */
+      user_fonts: usedUserFonts(),
       photos: out
     };
-  }
-
-  /** 把一张原始图按 artwork 尺寸画进 canvas，导成 Q86 JPEG（与电脑端一致）。 */
-  function makeArtwork(url, w, h) {
-    return new Promise(function (resolve, reject) {
-      var img = new Image();
-      img.onload = function () {
-        try {
-          var cv = document.createElement('canvas');
-          cv.width = w; cv.height = h;
-          cv.getContext('2d').drawImage(img, 0, 0, w, h);
-          var d = cv.toDataURL('image/jpeg', 0.86);
-          cv.width = 0; cv.height = 0;
-          resolve(d);
-        } catch (e) { reject(e); }
-      };
-      img.onerror = function () { reject(new Error(url)); };
-      img.src = url;
-    });
   }
 
   /**
    * 出书主流程。Kotlin 侧要挂 `window.BookBridge`：
    *   `publishBook(dirId, html, planJson) -> 书目录绝对路径`（失败给空串）
-   *   `addBookPhoto(dirPath, fileName, dataUrl) -> 是否写成`
+   *   `addBookPhoto(dirPath, fileName, srcPath, w, h) -> 是否写成`
    *   `progress(text)`（可选，用于界面提示）
+   *
+   * ★★ 2026-10-12（F164）：**写真不再经过浏览器**。
+   *   老路子是 `makeArtwork()`（new Image 再解一遍 12MP 原图 + canvas + toDataURL）
+   *   再把 ~400KB 的 base64 字符串过桥交给 Kotlin 解回来 —— 实测 90 张：
+   *   光 toDataURL 就 6.6 s（桌面），过桥字符串 37.5 MB，手机上更是分钟级。
+   *   现在只把「成品文件名 + 源路径 + 成品尺寸」交给 Kotlin，由它解码/转正/缩放/压 JPEG。
    */
   function publish() {
     if (!state.photos.length) { return 'empty'; }
@@ -646,24 +908,56 @@
       p.artwork = a.artwork;
       p.artwork_width = a.artwork_width;
       p.artwork_height = a.artwork_height;
-      files.push({ name: a.artwork.split('/').pop(), url: p.path,
-                   w: a.artwork_width, h: a.artwork_height });
+      files.push({
+        name: a.artwork.split('/').pop(),          // 成品书里的文件名
+        orig: p.name,                              // 原始文件名（失败时记名用）
+        // 源路径：去掉虚拟域域名，Kotlin 侧按 /picked/ 或 /books/ 自己找文件
+        src: String(p.path || '').replace(/^https?:\/\/[^/]+/, ''),
+        w: a.artwork_width, h: a.artwork_height
+      });
     }
+
+    // ①-2 ★ R30：封面照片取景烧进成品书（百分比 translate ⇒ 任何屏幕尺寸同一效果）
+    var cpv = null;
+    try { cpv = (window.__cpPhoto && window.__cpPhoto.changed()) ? window.__cpPhoto.get() : null; }
+    catch (e) { /* 忽略 */ }
 
     // ② 让引擎拼出成品书的 index.html（**与电脑端同一份模板**）
     buildPages();
     var pay = state.payload || {};
     var html;
+    /* ★ 2026-10-11：这一本若用了「用户字体」⇒ ① 让引擎把 `<link …user-fonts.css>` 写上；
+       ② 把 `ufN → 字体名` 那张表也交给引擎（成品书自己的字体声明在 user-fonts.css 里，
+       由 App 侧拷字体时一并写好）。没有用户字体时**照旧传 `{}`**，输出与从前逐字节一致。 */
+    var usedFonts = usedUserFonts();
+    var bookOpts = usedFonts.length ? { userFonts: true, fontFamilies: _userFontMap } : {};
     try {
       html = TP.buildIndexHtml({
         title: pay.title || '',
         subtitle: pay.subtitle || '',
         photos: ph,
         cover_text: pay.coverText || {}
-      }, state.pages, {});
+      }, state.pages, bookOpts);
     } catch (e) {
       report({ ok: false, error: '拼 index.html 失败：' + (e && e.message ? e.message : e) });
       return 'build-failed';
+    }
+
+    // ②-2 ★ R30：注入取景样式（放在 </head> 前；书 CSS 同特异性 ⇒ 后来者胜）
+    if (cpv) {
+      /* ⚠ 与 cpApply 同一条公式：只写 transform（object-position 保持引擎默认）。
+         translate 的百分比相对 img 自身（= 页面尺寸）⇒ 任何屏幕同一效果。 */
+      var cpCss = '.art-page[aria-label="封面"] .plate img{'
+        + 'transform-origin:0 0;';
+      if (cpv.z > 1.0001) {
+        cpCss += 'transform:translate(' + ((0.5 - cpv.x / 100 * cpv.z) * 100).toFixed(3) + '%, '
+              + ((0.5 - cpv.y / 100 * cpv.z) * 100).toFixed(3) + '%) scale(' + cpv.z.toFixed(4) + ');';
+      }
+      cpCss += '}';
+      html = html.replace('</head>', '  <style>' + cpCss + '</style>\n</head>');
+      if (html.indexOf(cpCss) < 0) {          // 没有 </head> 就拼在最前（兜底）
+        html = '  <style>' + cpCss + '</style>\n' + html;
+      }
     }
 
     // ③ 建书目录 + 写 index.html / book-plan.json / 观感资产
@@ -683,22 +977,27 @@
     }
 
     // ④ 逐张写真 —— 让出一帧，界面进度才动得起来
-    var k = 0, wrote = 0;
+    //   ★ F164：一个同步桥调用搞定一张（Kotlin 解码/转正/缩放/压 JPEG），
+    //     **不再**把 base64 大字符串搬来搬去。失败记名（最多 8 条）。
+    var k = 0, wrote = 0, failedNames = [];
     function writeStep() {
       if (k >= files.length) {
         report({ ok: true, publish: { dir: dir, photos: wrote, total: files.length,
-                                      pages: state.pages.length, html: html.length } });
+                                      pages: state.pages.length, html: html.length,
+                                      failed: failedNames } });
         return;
       }
       var f = files[k];
       say('正在写入照片 ' + (k + 1) + ' / ' + files.length);
       try { if (sh.progress) { sh.progress('正在写入照片 ' + (k + 1) + ' / ' + files.length); } }
       catch (e2) { /* 没挂也无所谓 */ }
-      makeArtwork(f.url, f.w, f.h).then(function (dataUrl) {
-        try { if (sh.addBookPhoto(dir, f.name, dataUrl)) { wrote++; } }
-        catch (e3) { /* 单张失败不中断整本 */ }
-        k++; setTimeout(writeStep, 0);
-      }, function () { k++; setTimeout(writeStep, 0); });
+      var ok = false;
+      try {
+        ok = sh.addBookPhoto(dir, f.name, f.src, Math.round(f.w), Math.round(f.h));
+      } catch (e3) { /* 单张失败不中断整本 */ }
+      if (ok) { wrote++; }
+      else if (failedNames.length < 8) { failedNames.push(f.orig); }
+      k++; setTimeout(writeStep, 0);
     }
     writeStep();
     return 'started';
@@ -1030,6 +1329,11 @@
     },
     /** 出书（M5）：把这本书落成目录。结果通过 `PreviewBridge.onPlan` 回给 Kotlin。 */
     publish: publish,
+    /** ★ R30：封面照片取景快路（Kotlin 恢复草稿时推 {x,y,z} 进来）。 */
+    setCoverPhoto: function (json) {
+      try { return window.__cpPhoto ? window.__cpPhoto.set(json) : null; }
+      catch (e) { return null; }
+    },
     info: function () {
       return JSON.stringify({ index: state.index, pages: state.pages.length,
                               photos: state.photos.length, bad: state.bad,
@@ -1099,6 +1403,68 @@
   var Z_MIN = 1, Z_MAX = 3.5, DRAG_PX = 5;
 
   var z = 1, tx = 0, ty = 0;
+
+  /* ══════════════════════════════════════════════════════════════════════
+     ★★ R30（2026-10-13）：**封面照片取景**（佘先生：「编辑封面时可以自由拖动、
+        放大、缩小来选择合适的位置，指序号 1 的那张做封面」）
+
+     三个数：x / y = 取景中心（封面宽的百分比，0~100）、z = 缩放（1~4）。
+     默认 {50, 46, 1} = 引擎 CSS 的 `object-position: 50% 46%` ⇒ **不调就是一个像素不变**。
+
+     数学（与 Phase 31/32 已验证的 zoom 同一套量纲：`transform-origin: 0 0`）：
+       · 缩放 z 后，translate 用**百分比**（相对 img 自身 = 页面尺寸）⇒ 手机/PC 同一公式
+       · 捏合时两指中心看到的内容不变：  x' = x·(1−z)/(1−z')
+       · x/y 夹在 [0,100] 时**永远不露边**（图左缘 = x·(1−z) ≤ 0、右缘 ≥ 1，已推导）
+     ⚠ 只在 `?cover=1`（封面编辑页）生效；摸到文字照旧拖文字（__pvDrag 那条，不打架）。
+     ⚠ 成品书那一侧由 publish() 把同样的三条烧进 <style>（见那边注入）。
+     ══════════════════════════════════════════════════════════════════════ */
+  var CP = { x: 50, y: 50, z: 1 };
+  var cpDrag = null, cpPinch = null;
+
+  function coverOnly() {
+    try { return document.documentElement.classList.contains('pv-cover-only'); }
+    catch (e) { return false; }
+  }
+  function coverImg() {
+    var b = document.getElementById('book');
+    var page = b && b.querySelector('.art-page[aria-label="封面"]');
+    return page ? page.querySelector('.plate img') : null;
+  }
+  /** 取景中心的合法范围（不露边；z=1 时唯一解 50% ⇒ 默认零变化）。 */
+  function cpClamp() {
+    var lo = 50 / CP.z, hi = 100 - 50 / CP.z;
+    CP.x = clamp(CP.x, lo, hi);
+    CP.y = clamp(CP.y, lo, hi);
+  }
+  function cpApply() {
+    var img = coverImg();
+    if (!img) { return; }
+    /* ⚠ object-position **一个字都不碰** —— 引擎 CSS 的 50%/46%（plate.large 是 42%）
+       就是"默认可见区"，取景全部由 transform 表达 ⇒ 不调时与从前逐像素一致。 */
+    if (CP.z > 1.0001) {
+      cpClamp();
+      img.style.transformOrigin = '0 0';
+      img.style.transform = 'translate(' + ((0.5 - CP.x / 100 * CP.z) * 100).toFixed(3) + '%, '
+        + ((0.5 - CP.y / 100 * CP.z) * 100).toFixed(3) + '%) scale(' + CP.z.toFixed(4) + ')';
+    } else {
+      img.style.transform = '';
+    }
+    cpBadge();
+  }
+  function cpReport() {
+    var box = { x: +CP.x.toFixed(3), y: +CP.y.toFixed(3), z: +CP.z.toFixed(4) };
+    try { window.__lastCoverPhoto = box; } catch (e) { /* 忽略 */ }
+    try {
+      if (window.PreviewBridge && window.PreviewBridge.onCoverPhoto) {
+        window.PreviewBridge.onCoverPhoto(JSON.stringify(box));
+      }
+    } catch (e2) { /* 桥没挂上也不该崩 */ }
+  }
+  function cpReset() {
+    CP.x = 50; CP.y = 50; CP.z = 1;
+    cpApply();
+    cpReport();
+  }
   var mode = null;                 // 'pinch' | 'pan' | 'drag'
   var pinchD0 = 0, pinchZ0 = 1;
   var pan0 = null;
@@ -1125,14 +1491,26 @@
     rig.style.setProperty('--pv-zoom', String(z));
     rig.style.setProperty('--pv-tx', tx + 'px');
     rig.style.setProperty('--pv-ty', ty + 'px');
-    if (badge) { badge.style.display = (z > 1.001) ? 'block' : 'none'; }
-    if (badge) { badge.textContent = Math.round(z * 100) + '%　✕ 复位'; }
+    cpBadge();
+  }
+
+  /** ★ R30：角标在封面编辑页报**照片**缩放，别处报 rig 缩放。 */
+  function cpBadge() {
+    if (!badge) { return; }
+    if (coverOnly()) {
+      badge.style.display = (CP.z > 1.001) ? 'block' : 'none';
+      badge.textContent = Math.round(CP.z * 100) + '%　✕ 复位';
+    } else {
+      badge.style.display = (z > 1.001) ? 'block' : 'none';
+      badge.textContent = Math.round(z * 100) + '%　✕ 复位';
+    }
   }
 
   var badge = document.createElement('div');
   badge.id = 'pv-zoom-badge';
   badge.addEventListener('click', function (e) {
-    e.stopPropagation(); e.preventDefault(); resetZoom();
+    e.stopPropagation(); e.preventDefault();
+    if (coverOnly()) { cpReset(); } else { resetZoom(); }
   });
   document.body.appendChild(badge);
 
@@ -1189,6 +1567,14 @@
     if (/\bcover-extra\b/.test(c)) { return el.getAttribute('data-ct') || null; }
     return null;
   }
+
+  /** ★ R30b：这一下点的是不是缩放角标（复位那颗）。 */
+  function isBadgeTarget(t) {
+    try {
+      return !!t && (t.id === 'pv-zoom-badge'
+                     || !!(t.closest && t.closest('#pv-zoom-badge')));
+    } catch (e) { return false; }
+  }
   function coverElFrom(target) {
     var n = target, hop = 0;
     while (n && n.nodeType === 1 && hop++ < 6) {
@@ -1244,21 +1630,44 @@
   /* ---------------- 手势总入口 ---------------- */
   function onStart(points, ev, isMouse) {
     if (points.length >= 2) {
-      mode = 'pinch'; pinchD0 = dist(points[0], points[1]); pinchZ0 = z;
+      /* ★ R30：封面编辑页里双指 = 缩**照片**（rig 缩放留给工作台预览） */
+      if (coverOnly()) {
+        mode = 'cpPinch';
+        cpPinch = { d0: Math.max(4, dist(points[0], points[1])), z0: CP.z, x0: CP.x, y0: CP.y };
+        drag = null; pan0 = null;
+        /* ★ R30b：捏合也要**跟手** —— 引擎 CSS 给封面 img 带了 transform 110ms 过渡，
+           不关掉的话每根 touchmove 都在"追"上一帧 ⇒ 捏起来黏糊糊的。
+           （拖动那条路 startCp 里本来就关，松手在 onEnd 恢复。） */
+        try { var im0 = coverImg(); if (im0) { im0.style.transition = 'none'; } } catch (e) { /* 忽略 */ }
+        if (ev && ev.cancelable) { ev.preventDefault(); }
+        return;
+      }
+      mode = 'pinch'; pinchD0 = dist(points[0],points[1]); pinchZ0 = z;
       drag = null; pan0 = null;
       if (ev && ev.cancelable) { ev.preventDefault(); }
       return;
     }
+    /* ★★ R30b：角标必须**真手指点得动**。
+       touchstart 上一 preventDefault，浏览器就不再派发兼容 mouse 事件（click 也被吞）
+       ⇒ 原来只有桌面鼠标能"✕ 复位"，手机上点烂了也没反应（本次真机验收抓到的）。
+       ⇒ 认出角标直接复位，且**不拦事件**（click 照发，监听器那份是幂等的）。 */
+    if (!isMouse && isBadgeTarget(ev.target)) {
+      if (coverOnly()) { cpReset(); } else { resetZoom(); }
+      return;
+    }
     if (isMouse) {
-      /* 鼠标：点在文字上 = 拖字；点在别处 = 平移（仅放大后） */
+      /* 鼠标：点在文字上 = 拖字；点在别处 = 拖照片（仅封面编辑页）/ 平移（仅放大后） */
       var el = coverElFrom(ev.target);
       if (el) { mode = 'drag'; startDrag(el, points[0].clientX, points[0].clientY); return; }
+      if (coverOnly()) { startCp(points[0], ev); return; }
       if (z > 1) { mode = 'pan'; pan0 = { x: points[0].clientX, y: points[0].clientY, tx: tx, ty: ty }; }
       else { mode = null; }
       return;
     }
     var el2 = coverElFrom(ev.target);
     if (el2) { mode = 'drag'; startDrag(el2, points[0].clientX, points[0].clientY); return; }
+    /* ★ R30：摸到照片空白处 = 拖照片取景 */
+    if (coverOnly()) { startCp(points[0], ev); return; }
     if (z > 1) {
       mode = 'pan';
       pan0 = { x: points[0].clientX, y: points[0].clientY, tx: tx, ty: ty };
@@ -1266,7 +1675,60 @@
     } else { mode = null; }
   }
 
+  /** ★ R30：按下照片空白处 ⇒ 开始拖取景（记住起始中心与页面尺寸）。 */
+  function startCp(p0, ev) {
+    var img = coverImg();
+    var plate = img && img.closest('.plate');
+    cpDrag = {
+      sx: p0.clientX, sy: p0.clientY, x0: CP.x, y0: CP.y, moved: false,
+      w: (plate && plate.clientWidth) || 1,
+      h: (plate && plate.clientHeight) || 1
+    };
+    mode = 'cp';
+    try { if (img) { img.style.transition = 'none'; } } catch (e) { /* 忽略 */ }
+    if (ev && ev.cancelable) { ev.preventDefault(); }
+  }
+
   function onMove(points, ev) {
+    /* ★ R30：捏合缩照片 —— 两指中心看到的**图点**不动。
+       cx1 = g + (z0/z1)·(cx0 − g)，g = 两指中点在**当前视觉矩形**里的归一化图点。
+       ⚠ 2026-10-13 真机验收抓到旧公式的量纲 bug：把百分数 x0(50) 当归一化 0.5 用
+       （`0.5 − x0·z0` = 0.5 − 50 = −49.5）⇒ 默认态一捏就飞出合法区、被夹到远端 75，
+       表现为"双指一放大，取景中心跳到右下角"。且旧式假设两指中心永远在元素中心，
+       偏心捏合时图点会跑；现在每步按当前 rect 重算 g，手指捏哪锚哪。 */
+    if (mode === 'cpPinch' && points.length >= 2 && cpPinch) {
+      var d = dist(points[0], points[1]);
+      if (d > 4) {
+        var z1 = clamp(cpPinch.z0 * d / cpPinch.d0, 1, 4);
+        var img2 = coverImg();
+        if (img2) {
+          var rr = img2.getBoundingClientRect();
+          var mx = (points[0].clientX + points[1].clientX) / 2;
+          var my = (points[0].clientY + points[1].clientY) / 2;
+          var gx = rr.width > 0 ? (mx - rr.left) / rr.width : 0.5;
+          var gy = rr.height > 0 ? (my - rr.top) / rr.height : 0.5;
+          var k = CP.z > 0.01 ? CP.z / z1 : 1;
+          CP.x = (gx + k * (CP.x / 100 - gx)) * 100;
+          CP.y = (gy + k * (CP.y / 100 - gy)) * 100;
+        }
+        CP.z = z1;
+        cpApply();
+      }
+      if (ev && ev.cancelable) { ev.preventDefault(); }
+      return;
+    }
+    /* ★ R30：拖着照片走 —— 盒随手指移动 ⇒ cx += −dx/(z·W)（z 是 rig 前景缩放） */
+    if (mode === 'cp' && cpDrag) {
+      var sdx = points[0].clientX - cpDrag.sx, sdy = points[0].clientY - cpDrag.sy;
+      if (!cpDrag.moved && Math.abs(sdx) < 3 && Math.abs(sdy) < 3) { return; }
+      cpDrag.moved = true;
+      var f = 100 / ((z || 1) * CP.z);
+      CP.x = cpDrag.x0 - (sdx / cpDrag.w) * f;
+      CP.y = cpDrag.y0 - (sdy / cpDrag.h) * f;
+      cpApply();
+      if (ev && ev.cancelable) { ev.preventDefault(); }
+      return;
+    }
     if (mode === 'pinch' && points.length >= 2) {
       if (pinchD0 > 4) {
         /* ★ 第十五轮：锚点＝**两指中点**（跟着手指走），不再固定左上角 ⇒ 见 [zoomAbout] */
@@ -1288,6 +1750,14 @@
 
   function onEnd(left, ev) {
     if (mode === 'drag') { endDrag(); }
+    /* ★ R30：照片取景松手 ⇒ 恢复过渡 + 上报一次（防抖由 Kotlin 侧做） */
+    if (mode === 'cp' || mode === 'cpPinch') {
+      var img = coverImg();
+      try { if (img) { img.style.transition = ''; } } catch (e) { /* 忽略 */ }
+      if (cpDrag && cpDrag.moved) { cpReport(); }
+      else if (mode === 'cpPinch' && cpPinch && Math.abs(CP.z - cpPinch.z0) > 0.001) { cpReport(); }
+      cpDrag = null; cpPinch = null;
+    }
     if (!left || left.length === 0) { mode = null; pinchD0 = 0; pan0 = null; return; }
     /* 双指松开一根 ⇒ 立刻转成平移，否则剩下的那根会"跳"一下 */
     if (mode === 'pinch' && left.length === 1) {
@@ -1345,6 +1815,27 @@
     reset: resetZoom,
     tx: function () { return tx; },
     ty: function () { return ty; }
+  };
+  /* ★ R30：封面照片取景的对外面（主 IIFE 的 publish / Kotlin 的快路 / 验收都走它）。 */
+  window.__cpPhoto = {
+    get: function () { return { x: +CP.x.toFixed(3), y: +CP.y.toFixed(3), z: +CP.z.toFixed(4) }; },
+    set: function (j) {
+      try {
+        var o = (typeof j === 'string') ? (JSON.parse(j) || {}) : (j || {});
+        if (typeof o.x === 'number') { CP.x = o.x; }
+        if (typeof o.y === 'number') { CP.y = o.y; }
+        if (typeof o.z === 'number') { CP.z = clamp(o.z, 1, 4); }
+      } catch (e) { /* 忽略 */ }
+      cpApply();
+      return this.get();
+    },
+    reset: cpReset,
+    apply: cpApply,
+    report: cpReport,
+    /** 是否动过（出书时判要不要烧录） */
+    changed: function () {
+      return CP.z > 1.0001 || Math.abs(CP.x - 50) > 0.01 || Math.abs(CP.y - 50) > 0.01;
+    }
   };
   window.__pvDrag = {
     keyOf: keyOf,
