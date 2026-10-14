@@ -11,6 +11,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -42,7 +43,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -63,15 +63,46 @@ import java.io.InputStream
 import kotlin.math.roundToInt
 
 /**
- * 一次最多能勾几张（系统照片选择器 / 老系统的多选上限）。
+ * 一次最多能勾几张的**天花板**（= 我们自己定的上限，不是系统的）。
  *
- * ⚠ 必须 > 1（`PickMultipleVisualMedia` 的构造要求），且要 ≤ 系统的
- *   `MediaStore.getPickImagesMaxLimit()`（默认 150）—— 取 100，两头都安全。
  * ⚠ 2026-10-08（第八轮①）`internal` 而不是 `private`：竖屏代理页 [PickProxyActivity]
  *   也要用它构造同一个契约 ⇒ **单一真相源**，两个页的上限永远一致，
  *   免得哪天只改一处，出现"工作台能选 100、代理页只让选 10"这种怪事。
+ *
+ * ★★ 2026-10-12（F162）：**不能拿它直接去构造契约**，必须过 [pickLimit] 留余量 ——
+ *   下面那条才是这次"一百张读不出来"里最容易漏掉的一处硬伤。
  */
 internal const val MAX_PICK = 100
+
+/**
+ * ★★ 真正喂给 `PickMultipleVisualMedia` 的上限 —— **绝不顶到系统天花板**。
+ *
+ * 为什么：AOSP `MediaProvider` 里 `PICK_IMAGES_MAX_LIMIT = 100`
+ *   （`MediaStore.getPickImagesMaxLimit()` 返回的就是它），而官方文档写明：
+ *   `EXTRA_PICK_IMAGES_MAX` 必须是 **大于 1 且 ≤ 该上限** 的整数，
+ *   否则系统直接回 **`Activity.RESULT_CANCELED`**。
+ *
+ * ⇒ 写死 100 等于**零余量**：哪台 ROM 的上限不是 100（或实现是"必须 < 上限"），
+ *   整批选择就无声无息地变成"没选照片（取消或没勾）" ——
+ *   用户视角就是"我选了一百张，它说没选到"。
+ *
+ * 修法：运行时读上限，**留 10% 余量**，再取我们自己天花板的较小值。
+ * ⚠ 选照片是**追加**语义（[PhotoStore.importPhotos]），一次选不满可以再选一次，
+ *   所以留余量**不会**真的限制总量。
+ */
+internal fun pickLimit(): Int {
+    val cap = try {
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            android.provider.MediaStore.getPickImagesMaxLimit()
+        } else Int.MAX_VALUE          // 老系统没有"系统照片选择器"，这个上限无效
+    } catch (t: Throwable) {
+        Log.w("Workbench", "读系统选图上限失败（退回 $MAX_PICK）", t)
+        Int.MAX_VALUE
+    }
+    if (cap <= 1) return MAX_PICK                 // 读不出来就按老样子
+    val withMargin = cap - cap / 10               // 留 10%
+    return maxOf(2, minOf(MAX_PICK, withMargin))
+}
 
 /**
  * 工作台里的一张照片。
@@ -174,7 +205,19 @@ class WorkbenchActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val src = intent.getStringExtra(EXTRA_SOURCE_BOOK) ?: "book1"
+        // ★★ `F161`（2026-10-11）：**补上 F157 漏掉的这一页**。
+        //
+        //   书架（`MainActivity`）与书页（`BookPageActivity`）在 F157 就改成了恒 `false`
+        //   （内容铺满整块屏幕），**这一页当时漏了** ⇒ 它仍是默认的"系统帮你让开系统栏"
+        //   ⇒ 内容被系统缩到 `[insets]` 以内、四角留白、**右下贴边** ⇒ 佘先生报的
+        //     「工作台显示在屏幕右下角」。
+        //
+        //   ⚠ 铺满的是**背景**（`Surface(color = Paper)` 随之铺满）；
+        //     **内容**仍由下面的 `sysBars()` 避开系统栏 ⇒ 控件位置一个像素不变，
+        //     只是白边没了 —— 与书架页完全同一口径（F157 已验证过那套）。
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        val src = intent.getStringExtra(EXTRA_SOURCE_BOOK) ?: "guide"
         val appCtx = applicationContext
         val initial = PhotoStore.currentPhotos(appCtx, src)
         Log.i("Workbench", "工作台起步照片：${initial.size} 张" +
@@ -216,7 +259,7 @@ private fun WorkbenchScreen(
     // ---- M4c：左栏两个页签（照片排版 / 封面文案）----
     var tab by remember { mutableStateOf("photos") }
     // ★ 2026-10-08（第四轮）：这两个**现在是可编辑的**（之前只有样式控件、文字写死）。
-    var title by remember { mutableStateOf(DEFAULT_TITLE) }
+    var title by remember { mutableStateOf(defaultBookTitle(ctx)) }
     var subtitle by remember { mutableStateOf(DEFAULT_SUBTITLE) }
     /**
      * ★ 2026-10-08（第六轮）：**页脚那一行的文字**。
@@ -242,6 +285,8 @@ private fun WorkbenchScreen(
     //   原本全在内存里，退出去就丢 ⇒ 挑半天一按返回全没。
     var restored by remember { mutableStateOf(false) }
     var draftHit by remember { mutableStateOf(0) }
+    /** ★ R30b：草稿里的**封面照片取景**（序号 1 那张）—— 进 payload + 回来时快路推。 */
+    var draftCoverPhoto by remember { mutableStateOf<DraftStore.Draft.CoverPhoto?>(null) }
     remember {
         val d = DraftStore.load(ctx)
         if (d != null) {
@@ -252,6 +297,7 @@ private fun WorkbenchScreen(
             footText = d.footText
             cover.putAll(d.cover)
             coverExtras = countExtras(cover)      // ★ 第六轮：文字框数量跟着草稿回来
+            draftCoverPhoto = d.coverPhoto        // ★ R30b
             // 把档位/位置贴回对应的照片（照片不在了就跳过 —— 照片被清掉/换了一批）
             var n = 0
             d.perPhoto.forEach { (key, e) ->
@@ -283,7 +329,9 @@ private fun WorkbenchScreen(
     var textEditing by remember { mutableStateOf(false) }
     /** 放大预览：左栏收起，书占满整屏（横屏下预览区只有 ~1/3 屏宽，书显得很小）。 */
     var widePreview by remember { mutableStateOf(false) }
-    val focusManager = LocalFocusManager.current
+    /* ⚠ 2026-10-12：原来这里有一行 `val focusManager = LocalFocusManager.current`，
+       全文件**从没用过**它（grep 只有一个声明点）⇒ 触发 "never used" 警告。
+       确认无用后删掉 —— 真要"点空白处收键盘"时再取一次就是了。 */
 
     // ---- 草稿自动保存：所有编辑都从 pushCover / pushPlate 这两个入口走，
 //   在这里统一存一次，就不会漏掉某条路径。防抖 400ms（拖滑块时不会写爆）。
@@ -343,6 +391,23 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     }
 
     /**
+     * ★ R30b：把**封面照片取景**推给预览（快路，不重新解码照片）。
+     *
+     * 三个调用时机：① 从封面编辑页回来（那边刚存好草稿）；② 草稿恢复后首屏
+     * （payload 也会带，这里双保险）；③ 用户在本页复位/调了取景时。
+     * 传 null / 默认值 ⇒ 推 {50,50,1}（页面那边 transform 清空，与引擎默认逐像素一致）。
+     */
+    fun pushCoverPhoto() {
+        val cp = draftCoverPhoto
+        val json = if (cp == null || cp.isDefault) {
+            "{\"x\":50,\"y\":50,\"z\":1}"
+        } else {
+            "{\"x\":${cp.x},\"y\":${cp.y},\"z\":${cp.z}}"
+        }
+        preview.setCoverPhoto(json)
+    }
+
+    /**
      * ★ 第七轮：告诉预览页「哪一个文字框正在发亮」（两段式删除的第一下）。
      *
      * ⚠ 走**独立**一条通路而不是塞进 `setCover`：发亮是**编辑态**的临时状态，
@@ -381,6 +446,7 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
             footText = d.footText
             cover.putAll(d.cover)
             coverExtras = countExtras(cover)
+            draftCoverPhoto = d.coverPhoto        // ★ R30b
             var n = 0
             d.perPhoto.forEach { (key, e) ->
                 val i = photos.indexOfFirst { it.key == key }
@@ -392,16 +458,23 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
             draftHit = n
             tip = "封面已更新"
         } else {
-            title = DEFAULT_TITLE
+            title = defaultBookTitle(ctx)
             subtitle = DEFAULT_SUBTITLE
             footText = ""
             coverExtras = 0
+            draftCoverPhoto = null                 // ★ R30b：草稿被清 ⇒ 取景也回默认
             tip = "封面已恢复默认"
         }
         coverEl = "title"
         delArmed = null
         // 推给预览（那三个函数走的是快路 + 幂等，多推一次无害）
         pushCover(); pushText(); pushFoot()
+        // ★★ R30b：封面照片取景也要推 —— **这条是本次真机验收抓到的真 bug**：
+        //   封面编辑页那边调好的拖动/缩放，存在草稿里；可工作台这份预览自打加载起
+        //   CP 就是默认 {50,50,1}，没人推给它 ⇒ 点「生成画册」时 `__cpPhoto.changed()`
+        //   是 false ⇒ 出的书**把用户调好的取景丢了**（封面又是引擎默认裁切）。
+        //   ⇒ 回来立刻推一次（页面已在，快路立刻见效；出书读的也是这份 CP）。
+        pushCoverPhoto()
     }
 
     // 恢复完之后，把草稿里的内容推给预览引擎（否则预览还是默认档）
@@ -468,6 +541,18 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
                 val dir = pub.optString("dir")
                 val wrote = pub.optInt("photos")
                 val pages = pub.optInt("pages")
+                // ★★ F164：哪几张**没写进书**要说出来（老路子静默跳过 ⇒ 用户只看见"少了"，
+                //   还常常正是封面那张 ⇒ 书架/成品书上"封面加载不出来"）。
+                val failArr = pub.optJSONArray("failed")
+                val nFail = failArr?.length() ?: 0
+                val failNames = if (nFail > 0) {
+                    (0 until minOf(nFail, 3))
+                        .mapNotNull { failArr?.optString(it)?.takeIf { n -> n.isNotBlank() } }
+                } else emptyList()
+                val failTip = if (nFail > 0 && failNames.isNotEmpty()) {
+                    "｜$nFail 张没写进书：${failNames.joinToString("、")}" +
+                        (if (nFail > failNames.size) " 等" else "")
+                } else ""
                 val tree = LibraryStore.outputTree(ctx)?.let { u -> u to LibraryStore.outputName(ctx) }
                 // ★★ 2026-10-08（第六轮）：出书成功 ⇒ **退出工作台回书架**。
                 //   佘先生：「我点击生成画册成功后退出生成工具界面」——
@@ -476,9 +561,9 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
                 //     跑完的结果通过 MainActivity 的下一屏显示；这页立刻退掉。
                 //   ⚠ 失败向**不动**：仍留在工作台并给提示（要能重试 / 看错在哪）。
                 val doneTip = if (tree != null && dir.isNotBlank()) {
-                    "已出书：$wrote 张 / $pages 页，正在导出到「${tree.second}」…"
+                    "已出书：$wrote 张 / $pages 页，正在导出到「${tree.second}」…" + failTip
                 } else {
-                    "已出书：$wrote 张 / $pages 页 —— 回书架就能翻"
+                    "已出书：$wrote 张 / $pages 页 —— 回书架就能翻" + failTip
                 }
                 if (tree != null && dir.isNotBlank()) {
                     scope.launch {
@@ -506,6 +591,22 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
                 publishing = false
                 busy = ""
                 tip = "出书失败：" + o.optString("error")
+            }
+            // ★★ F162：预览回报「有几张读不出来」⇒ **说人话 + 列出名字**。
+            //   以前这一路根本不接 ⇒ 用户只看到书没变，却不知道是哪几张没进来
+            //   （这正是"识别失败"最难定位的一环）。
+            if (!publishing) {
+                val bad = o.optInt("bad", 0)
+                if (bad > 0) {
+                    val names = o.optJSONArray("badNames")?.let { arr ->
+                        (0 until minOf(arr.length(), 3)).mapNotNull { i ->
+                            arr.optString(i).takeIf { it.isNotBlank() }
+                        }
+                    }.orEmpty()
+                    tip = "有 $bad 张照片读不出来" +
+                        (if (names.isNotEmpty()) "：" + names.joinToString("、") +
+                            (if (bad > names.size) " 等" else "") else "")
+                }
             }
         } catch (t: Throwable) {
             Log.w("Workbench", "解析预览回报失败", t)
@@ -543,24 +644,36 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
         val wasPortrait = res.data?.getBooleanExtra(PickProxyActivity.EXTRA_PORTRAIT_LOCKED, false)
             ?: false
 
-        val uris = res.data?.getParcelableArrayListExtra<android.net.Uri>(
-            PickProxyActivity.EXTRA_URIS
-        )
-        if (uris.isNullOrEmpty()) {
+        // ★★ F163：**照片已经在代理页里拷好了**，这里只收结果。
+        //   ⛔ 绝不要再在这里调 `PhotoStore.importPhotos` —— URI 的读授权是授给**代理页**的，
+        //      代理页一销毁就撤销 ⇒ 这里的 `openInputStream` 是在跟撤销赛跑
+        //      ⇒ 选九十张时只成功头一两张，其余全报"读不出来"（老毛病就是这么来的）。
+        val d = res.data
+        if (d == null || !d.hasExtra(PickProxyActivity.EXTRA_ADDED)) {
             tip = "没选照片（取消或没勾）"
             return@rememberLauncherForActivityResult
         }
+        val added = d.getIntExtra(PickProxyActivity.EXTRA_ADDED, 0)
+        val failed = d.getStringArrayListExtra(PickProxyActivity.EXTRA_FAILED) ?: ArrayList()
         scope.launch {
-            busy = "正在读取 ${uris.size} 张…"
-            val added = withContext(Dispatchers.IO) { PhotoStore.importPhotos(ctx, uris) }
             val all = withContext(Dispatchers.IO) { PhotoStore.scanPicked(ctx) }
             photos.clear()
             photos.addAll(all)
             selected.clear()
-            busy = ""
             saveDraftSoon()      // 照片集合变了 ⇒ 草稿要跟着更新
-            tip = if (added == uris.size) "新增 $added 张，现在共 ${photos.size} 张"
-                  else "新增 $added 张（有 ${uris.size - added} 张读不出来），共 ${photos.size} 张"
+            // ★★ F162：失败**列出名字**（老提示只有一个"N 张读不出来"，查都没法查）
+            tip = if (failed.isEmpty()) {
+                "新增 $added 张，现在共 ${photos.size} 张"
+            } else {
+                "新增 $added 张，共 ${photos.size} 张｜这 ${failed.size} 张读不出来："
+                    .plus(failed.take(3).joinToString("、"))
+                    .plus(if (failed.size > 3) " 等" else "")
+            }
+            // ★ 一次选满了 ⇒ 告诉他可以再选一次（选照片是**追加**语义，不会覆盖）
+            val cap = pickLimit()
+            if (added >= cap) {
+                tip = "$tip｜一次最多选 $cap 张；要更多就再点一次「选照片」，会自动接在后面"
+            }
             //方向没成就在末尾**追加**一句提示，绝不覆盖掉上面这条"新增 N 张"
             //（用户最关心的信息是"选进去几张"，不能被方向的事挤掉）。
             if (!wasPortrait) tip = "$tip｜相册是横的，点「选照片」旁的「竖屏相册」可开启"
@@ -658,14 +771,14 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
                         }
                     })
             }
-            Spacer(Modifier.width(14.dp))
-            Text("自动排版", color = Ink.copy(alpha = 0.7f), fontSize = 13.sp,
-                modifier = Modifier.testTag("wb-auto").clickable {
-                    // 清掉所有人工改过的档位，回到引擎自动分档
-                    for (i in photos.indices) photos[i] = photos[i].copy(plate = null, position = null)
-                    preview.autoArrange()
-                    tip = "已按清晰度重新自动排版"
-                })
+            // ★★ R32（2026-10-14，佘先生）：「自动排版」这个**按钮去掉**，但**功能保留**。
+            //   他的原话：使用时感觉用不上。
+            //   ⇒ 只删 UI 入口（原 `Text("自动排版") { testTag("wb-auto") }`），
+            //     `PreviewController.autoArrange()` / `preview.html` 的 `autoArrange()`
+            //     **一行不动** —— 引擎进页面时本来就会自动排一次，功能一直在跑，
+            //     只是不再给用户一个多余的手工入口。
+            //   ⚠ 联动：验收脚本的顶栏清单里有 `wb-auto` ⇒ 已从
+            //     `_m4c.py:top_bar_fits` / `_health.py` 的清单里同步去掉（否则体检假红）。
             Spacer(Modifier.width(14.dp))
             // ★ 顶栏**宽度恒定**：选中态的那些操作（删除所选/取消选择）搬到左栏去。
             //   为什么非这样不可（真机实测踩到的）：选中照片时顶栏多出两个按钮 ⇒
@@ -833,6 +946,9 @@ var saveJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
                 title = title,
                 subtitle = subtitle,
                 coverText = cover,
+                // ★ R30b：封面照片取景跟着草稿走（冷启动/重算时进 payload；
+                //   从封面编辑页回来时另有一次快路推送，见 coverEdit 回调）
+                coverPhoto = draftCoverPhoto,
                 controller = preview,
                 modifier = Modifier.weight(1f).fillMaxHeight(),
                 onPlan = { json -> handlePlan(json, act) },
@@ -1071,7 +1187,9 @@ private fun PhotoGrid(
                             if (isSel) selected.remove(p.key) else selected.add(p.key)
                         }
                 ) {
-                    val bmp = rememberThumb(p.key, 200) { p.open(ctx) }
+                    // ★ F165：第四个参数是**磁盘缓存的失效指纹**（内置素材传 null）
+                    //   —— 照片被替换/删改 ⇒ 指纹变 ⇒ 缓存键失效 ⇒ 自动回退解码原图。
+                    val bmp = rememberThumb(p.key, 200, { p.open(ctx) }, Thumbs.stamp(p.file))
                     if (bmp != null) {
                         Image(bmp, contentDescription = null,
                             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -1182,7 +1300,7 @@ private fun PlatePanel(
 /**
  * 封面文案的默认值（**只用来当滑块的起点**）。
  *
- * ⚠ 抄自 `books/book1/style/book-style.css` 里那三条 `var(--ct-*, 回退值)`：
+ * ⚠ 抄自 `books/guide/style/book-style.css` 里那三条 `var(--ct-*, 回退值)`：
  *   `title` 7.2cqw/y15% · `subtitle` 2.1cqw/y33% · `foot` 1.6cqw/y7%。
  *   它**不会**被写进配置 —— 用户不动滑块，配置里就没有这一项（见 [CoverConf]）。
  */

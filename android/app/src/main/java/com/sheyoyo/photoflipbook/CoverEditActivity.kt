@@ -3,7 +3,9 @@ package com.sheyoyo.photoflipbook
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,8 +29,10 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -77,7 +81,7 @@ class CoverEditActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val src = intent.getStringExtra(EXTRA_SOURCE_BOOK) ?: "book1"
+        val src = intent.getStringExtra(EXTRA_SOURCE_BOOK) ?: "guide"
         val appCtx = applicationContext
         // ★ 与工作台同一个取照片入口 ⇒ 封面用的那张、页序都一致
         val initial = PhotoStore.currentPhotos(appCtx, src)
@@ -109,10 +113,10 @@ private val CE_GROUPS: List<Triple<String, String, String>> = listOf(
 
 /** 一个元素的显示名（人话 —— 提示语那条命门）。 */
 internal fun ceLabel(el: String): String = when (el) {
-    "title" -> "书名"
+    "title" -> "标题"
     "subtitle" -> "副标题"
-    "foot" -> "页脚"
-    else -> "文字框 " + el.drop(1)
+    "foot" -> "尾注"
+    else -> "文字 " + el.drop(1)
 }
 
 @Composable
@@ -123,11 +127,13 @@ private fun CoverEditScreen(initial: List<PhotoRef>, onClose: () -> Unit) {
     val tagOn = Modifier.semantics { testTagsAsResourceId = true }
 
     val photos = remember { mutableStateListOf<PhotoRef>().also { it.addAll(initial) } }
-    var title by remember { mutableStateOf(DEFAULT_TITLE) }
+    var title by remember { mutableStateOf(defaultBookTitle(ctx)) }
     var subtitle by remember { mutableStateOf(DEFAULT_SUBTITLE) }
     var footText by remember { mutableStateOf("") }
     /** 封面样式覆盖（**只放用户真动过的项**，口径见 [CoverConf] 的注释）。 */
     val cover = remember { mutableStateMapOf<String, CoverConf>() }
+    /** ★ R30：封面照片取景（序号 1 那张）。null = 没调过 = 引擎默认。 */
+    var coverPhoto by remember { mutableStateOf<DraftStore.Draft.CoverPhoto?>(null) }
 
     /** 当前选中哪一处（预览里点、或新增之后自动选中）。 */
     var sel by remember { mutableStateOf("title") }
@@ -172,9 +178,10 @@ private fun CoverEditScreen(initial: List<PhotoRef>, onClose: () -> Unit) {
         val subtitle: String,
         val footText: String,
         val cover: Map<String, CoverConf>,
+        val coverPhoto: DraftStore.Draft.CoverPhoto?,
     )
 
-    fun snap() = Snap(title, subtitle, footText, LinkedHashMap(cover))
+    fun snap() = Snap(title, subtitle, footText, LinkedHashMap(cover), coverPhoto)
     val undoStack = remember { mutableStateListOf<Snap>() }
     /** 初始快照单独存一份 ⇒ 「↺ 回到初始」不必靠撤到底（撤到底 = 一样，但要多按几次）。 */
     var initialSnap by remember { mutableStateOf<Snap?>(null) }
@@ -194,7 +201,7 @@ private fun CoverEditScreen(initial: List<PhotoRef>, onClose: () -> Unit) {
     fun saveNow() {
         if (!restored) return
         try {
-            DraftStore.saveNow(ctx, photos, title, subtitle, cover, footText)
+            DraftStore.saveNow(ctx, photos, title, subtitle, cover, footText, coverPhoto)
         } catch (t: Throwable) {
             Log.w(TAG, "存草稿失败（不影响使用）", t)
         }
@@ -287,6 +294,46 @@ private fun CoverEditScreen(initial: List<PhotoRef>, onClose: () -> Unit) {
         tip = "已回到最初的样子"
     }
 
+    // ══════════════════ ★ 2026-10-11：用户字体库（全局）══════════════════
+    /**
+     * 佘先生要求：字体组块里能「引入外部字体」，认得出就导入**本机字体库**，认不出给提示。
+     * ⚠ 字体文件存 `files/user_fonts/`（App 私有，**不进 APK**、别人装了也没有）；
+     *   用了外部字体的画册由出书环节**把它带上**（见 `BookWriter.carryUserFonts`）。
+     */
+    val userFonts = remember { mutableStateListOf<FontStore.UserFont>() }
+    LaunchedEffect(Unit) {
+        userFonts.clear(); userFonts.addAll(FontStore.list(ctx))
+    }
+
+    /** 字体引入成功/失败都要给他一句话（那条"出错也要看得见"的命门）。 */
+    fun onFontResult(r: FontStore.AddResult) {
+        when (r) {
+            is FontStore.AddResult.Ok -> {
+                userFonts.clear(); userFonts.addAll(FontStore.list(ctx))
+                pushUndo()
+                val c0 = cover[sel] ?: CoverConf()
+                cover[sel] = c0.copy(font = r.font.key)   // 引入后**直接应用到当前选中项**
+                pushCoverSilent()
+                tip = "已引入字体「${r.font.name}」，并应用到「${ceLabel(sel)}」"
+            }
+            is FontStore.AddResult.Fail -> tip = r.reason
+        }
+    }
+
+    // 系统文件选择器：挑一个字体文件（ttf/otf/woff/woff2）
+    val fontPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) { tip = "没有选字体文件"; return@rememberLauncherForActivityResult }
+        val nm = try {
+            ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+            }
+        } catch (t: Throwable) { null }
+        onFontResult(FontStore.addFromUri(ctx, uri, nm))
+    }
+
 
     remember {
         val d = DraftStore.load(ctx)
@@ -295,6 +342,7 @@ private fun CoverEditScreen(initial: List<PhotoRef>, onClose: () -> Unit) {
             if (d.subtitle.isNotBlank()) subtitle = d.subtitle
             footText = d.footText
             cover.putAll(d.cover)
+            coverPhoto = d.coverPhoto
             // 档位/位置也贴回去 —— 它决定页序，而"封面用哪张照片"是引擎按页序算的
             d.perPhoto.forEach { (key, e) ->
                 val i = photos.indexOfFirst { it.key == key }
@@ -410,7 +458,7 @@ restored = true
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
         ) {
             Text(
-                "＋ 新增文字框", color = Color.White, fontSize = 13.sp,
+                "＋ 新增文字", color = Color.White, fontSize = 13.sp,
                 modifier = Modifier
                     .testTag("ce-add")
                     .clip(RoundedCornerShape(14.dp))
@@ -418,7 +466,7 @@ restored = true
                     .clickable {
                         val n = nextExtraNum(cover)
                         if (n > COVER_EXTRA_MAX) {
-                            tip = "文字框最多 $COVER_EXTRA_MAX 个"
+                            tip = "文字最多 $COVER_EXTRA_MAX 个"
                         } else {
                             pushUndo()                            // ★ 第十八轮：可撤回
                             cover["x$n"] = CoverConf(text = "文字 $n")
@@ -427,7 +475,7 @@ restored = true
                             open = "text"        // 新增立刻就让他打字（不然还得再点一下）
                             delArmed = null
                             pushCover()
-                            tip = "已加「文字框 $n」—— 下面直接打字就行"
+                            tip = "已加「文字 $n」—— 下面直接打字就行"
                         }
                     }
                     .padding(horizontal = 12.dp, vertical = 7.dp)
@@ -451,7 +499,7 @@ restored = true
                     selHidden -> "↺ 恢复显示"
                     delArmed == sel && selIsExtra -> "● 再点删除"
                     delArmed == sel -> "● 再点就删"
-                    selIsExtra -> "删除文字框"
+                    selIsExtra -> "删除文字"
                     else -> "从封面删掉"
                 },
                 color = when {
@@ -495,7 +543,7 @@ restored = true
                         if (delArmed != sel) {
                             delArmed = sel
                             tip = if (selIsExtra) {
-                                "再点一次「删除文字框」才真的删掉（防误删）"
+                                "再点一次「删除文字」才真的删掉（防误删）"
                             } else {
                                 "再点一次就把「${ceLabel(sel)}」从封面上拿掉（还能恢复显示）"
                             }
@@ -509,7 +557,7 @@ restored = true
                             open = null
                             delArmed = null
                             pushCover()
-                            tip = "已删掉那个文字框"
+                            tip = "已删掉那条文字"
                         } else {
                             pushUndo()                        // ★ 第十八轮：可撤回
                             val c0 = cover[sel] ?: CoverConf()
@@ -537,6 +585,9 @@ restored = true
                     title = title,
                     subtitle = subtitle,
                     coverText = cover,
+                    // ★ R30b：取景也走一份 payload（重算/冷启动双保险）；
+                    //   onReady 那次快路推送照旧（页面就绪比 payload 更早见效）。
+                    coverPhoto = coverPhoto,
                     controller = preview,
                     coverOnly = true,                       // ★ 只画封面（单页、锁第 1 页）
                     modifier = Modifier.fillMaxSize(),
@@ -546,6 +597,12 @@ restored = true
                         //   **变化**时跑，而"进页面这一下"footText 没变过（那时页面还没就绪）⇒ 会漏。
                         preview.setCover(coverTextJson(cover).toString())
                         preview.setFootText(footText)
+                        // ★ R30：把草稿里的封面照片取景推给预览（早了会被丢，同 setCover）
+                        coverPhoto?.let { cp ->
+                            preview.setCoverPhoto(
+                                "{\"x\":${cp.x},\"y\":${cp.y},\"z\":${cp.z}}"
+                            )
+                        }
                     },
                     onCoverPick = { json ->
                         try {
@@ -565,6 +622,22 @@ restored = true
                             }
                         } catch (t: Throwable) {
                             Log.w(TAG, "封面拾取解析失败", t)
+                        }
+                    },
+                    onCoverPhoto = { json ->
+                        try {
+                            val o = JSONObject(json)
+                            val x = o.optDouble("x", Double.NaN)
+                            val y = o.optDouble("y", Double.NaN)
+                            val z = o.optDouble("z", Double.NaN)
+                            if (!x.isNaN() && !y.isNaN() && !z.isNaN()) {
+                                pushUndo()                    // ★ 第十八轮：可撤回
+                                coverPhoto = DraftStore.Draft.CoverPhoto(x.toFloat(), y.toFloat(), z.toFloat())
+                                tip = "封面照片：缩放 " + Math.round(z * 100f) + "%"
+                                saveSoon()
+                            }
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "封面照片取景解析失败", t)
                         }
                     },
                     onCoverMove = { json ->
@@ -621,6 +694,9 @@ restored = true
             },
             extraNums = cover.keys.filter { it.matches(Regex("^x[1-9]\\d?$")) }
                 .mapNotNull { it.drop(1).toIntOrNull() }.sorted(),
+            // ★ 2026-10-11：用户字体库 + 「引入字体」入口（都挂在字体组块里）
+            userFonts = userFonts,
+            onImportFont = { fontPicker.launch(arrayOf("*/*")) },
             onTapSel = { open = if (open == "text") null else "text" },
             onToggle = { g -> open = if (open == g) null else g },
             onSelectEl = { k ->
@@ -671,7 +747,7 @@ restored = true
             onReset = {
                 pushUndo()
                 cover.clear()
-                title = DEFAULT_TITLE
+                title = defaultBookTitle(ctx)
                 subtitle = DEFAULT_SUBTITLE
                 footText = ""
                 sel = "title"
@@ -680,7 +756,7 @@ restored = true
                 preview.setCover("{}")
                 preview.setFootText("")
                 saveSoon()
-                tip = "封面文案已恢复默认（书名 / 副标题 / 页脚 / 文字框）"
+                tip = "封面文案已恢复默认（标题 / 副标题 / 尾注 / 文字）"
             },
             onEditing = { editing -> if (!editing) focus.clearFocus() },
         )
@@ -748,6 +824,9 @@ private fun CoverBar(
     textValue: String,
     /** 现在有哪几个文字框（1..8，给"换选中"那一排用）。 */
     extraNums: List<Int>,
+    /** ★ 2026-10-11：用户字体库（全局，`files/user_fonts`）+「引入字体」入口。 */
+    userFonts: List<FontStore.UserFont>,
+    onImportFont: () -> Unit,
     onTapSel: () -> Unit,
     onToggle: (String) -> Unit,
     onSelectEl: (String) -> Unit,
@@ -854,9 +933,26 @@ private fun CoverBar(
                 when (open) {
                     // ---- 文字：就地打字 + 换选中（书名/副标题/页脚/文字框N）----
                     "text" -> {
+                        // ★★ 修复「点文字框输入后**没有替换**原来的文字」（佘先生 2026-10-11 报）：
+                        //   原来用 `BasicTextField(value: String, onValueChange)` —— **String 版没有
+                        //   选区/光标状态**，光标恒在**末尾** ⇒ 点进去一打字就变成"在原文后面**追加**"，
+                        //   看着就是"没替换"。改用 `TextFieldValue` 并把**聚焦那一刻的选区设成全选**
+                        //   （`TextRange(0, len)`）⇒ 接着打字就是**替换**整段原文。
+                        var tf by remember(sel) { mutableStateOf(TextFieldValue(textValue)) }
+                        // 外部改了文字（切换选中项 / 撤回 / 恢复默认）时，把输入框同步过来。
+                        // ⚠ 用户自己打字时 `tf.text` 已是最新 ⇒ 这里相等、**不重置**（不打断光标与输入法组字）。
+                        LaunchedEffect(sel, textValue) {
+                            if (tf.text != textValue) {
+                                tf = TextFieldValue(textValue, TextRange(textValue.length))
+                            }
+                        }
                         BasicTextField(
-                            value = textValue,
-                            onValueChange = onText,
+                            value = tf,
+                            onValueChange = { v ->
+                                val changed = v.text != tf.text
+                                tf = v
+                                if (changed) { onText(v.text) }
+                            },
                             singleLine = true,
                             textStyle = TextStyle(color = Ink, fontSize = 14.sp),
                             cursorBrush = SolidColor(Accent),
@@ -864,12 +960,18 @@ private fun CoverBar(
                                 .fillMaxWidth().height(38.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(Color.White)
-                                .onFocusChanged { onEditing(it.isFocused) }
+                                .onFocusChanged { st ->
+                                    // ★ 聚焦即**全选**：接着打字就替换，而不是追加（这就是他报的症状）。
+                                    if (st.isFocused) {
+                                        tf = tf.copy(selection = TextRange(0, tf.text.length))
+                                    }
+                                    onEditing(st.isFocused)
+                                }
                                 .padding(horizontal = 10.dp)
                                 .testTag("ce-text"),
                             decorationBox = { inner ->
                                 Box(contentAlignment = Alignment.CenterStart) {
-                                    if (textValue.isEmpty()) {
+                                    if (tf.text.isEmpty()) {
                                         Text(
                                             "${ceLabel(sel)}（点这里打字）",
                                             color = Ink.copy(alpha = 0.3f), fontSize = 13.sp
@@ -887,7 +989,7 @@ private fun CoverBar(
                                 .horizontalScroll(rememberScrollState())
                                 .testTag("ce-els")
                         ) {
-                            listOf("title" to "书名", "subtitle" to "副标题", "foot" to "页脚")
+                            listOf("title" to "标题", "subtitle" to "副标题", "foot" to "尾注")
                                 .forEach { (k, t) ->
                                     val on = sel == k
                                     val hid = k in hiddenEls
@@ -914,7 +1016,7 @@ private fun CoverBar(
                                 val k = "x$nn"
                                 val on = sel == k
                                 Text(
-                                    "文字框$nn",
+                                    "文字$nn",
                                     color = if (on) Color.White else Ink.copy(alpha = 0.8f),
                                     fontSize = 12.sp, maxLines = 1,
                                     modifier = Modifier
@@ -952,18 +1054,34 @@ private fun CoverBar(
                                 BarChip("大", size >= 5f, "ce-size-l") { onChange(conf.copy(size = 7f)) }
                             }
 
-                            // ---- 字体 ----
+                            // ---- 字体（内置 4 支 + 用户字体库 + 「＋引入」）----
+                            // ⚠ 这一组可能很长（内置 4 + 用户引入的 N + 斜体 + 引入）⇒ 单独包一层
+                            //   **可横向滚动**的 Row，免得被裁掉。外层的「位置」组用了 `weight`，
+                            //   整条外层不能加 scroll ⇒ 只在字体这一组内部滚。
                             "font" -> {
-                                BarLabel("字体")
-                                listOf("serif" to "衬线", "hei" to "黑体", "song" to "宋体", "kai" to "楷体")
-                                    .forEach { (v, t) ->
-                                        BarChip(t, conf.font == v, "ce-font-$v") {
-                                            onChange(conf.copy(font = v))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                                ) {
+                                    BarLabel("字体")
+                                    listOf("serif" to "衬线", "hei" to "黑体", "song" to "宋体", "kai" to "楷体")
+                                        .forEach { (v, t) ->
+                                            BarChip(t, conf.font == v, "ce-font-$v") {
+                                                onChange(conf.copy(font = v))
+                                            }
+                                        }
+                                    // ★ 用户字体库（引入过的那几支，按引入顺序排在后面）
+                                    userFonts.forEach { uf ->
+                                        BarChip(uf.name, conf.font == uf.key, "ce-font-${uf.key}") {
+                                            onChange(conf.copy(font = uf.key))
                                         }
                                     }
-                                Spacer(Modifier.width(8.dp))
-                                BarChip("斜体", conf.italic == true, "ce-italic") {
-                                    onChange(conf.copy(italic = !(conf.italic ?: false)))
+                                    Spacer(Modifier.width(4.dp))
+                                    BarChip("＋引入", false, "ce-font-import") { onImportFont() }
+                                    Spacer(Modifier.width(8.dp))
+                                    BarChip("斜体", conf.italic == true, "ce-italic") {
+                                        onChange(conf.copy(italic = !(conf.italic ?: false)))
+                                    }
                                 }
                             }
 

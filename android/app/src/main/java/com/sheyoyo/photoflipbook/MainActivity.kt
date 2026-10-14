@@ -22,7 +22,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -104,6 +105,13 @@ private class PlanInfo {
 }
 
 /**
+ * 内置教学画册的目录名（`assets/books/guide`）。
+ * 它在书架里**永远排第一** —— 用户一打开 App 就该看到使用说明，
+ * 否则按"用户书优先"的通用规则它会垫底，得滑到底才找得到。
+ */
+private const val GUIDE_BOOK_KEY = "guide"
+
+/**
  * 书架 = 「内置演示书」+「`files/books` 下每本用户书」。
  *
  * ⚠ 判定规则照旧工程：**有 `index.html` 就算一本书**，不靠任何登记表。
@@ -156,8 +164,9 @@ fun scanBooks(context: Context, root: File): List<Book> {
             out += Book(dir.name, false, dir,
                 info.title.ifBlank { dir.name }, info.subtitle, info.photos, info.cover)
         }
-        // 用户书排前面（新的在前），内置演示书垫底
-        out.sortWith(compareByDescending<Book> { it.builtin == false }
+        // 排序：教学画册置顶 → 用户书排前面（新的在前）→ 其他内置演示书垫底
+        out.sortWith(compareByDescending<Book> { it.key == GUIDE_BOOK_KEY }
+            .thenByDescending { it.builtin == false }
             .thenByDescending { it.dir?.lastModified() ?: 0L })
     }
     return out
@@ -298,10 +307,37 @@ private fun treeLabel(uri: Uri): String = try {
  *
  * @param forceRecalc **每次转屏必变的值**（调用方传 `coverPortrait`）。
  *   ★ 它本身不参与 padding 计算，**只为了让这个 Modifier 在转屏时被重建**。
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ★★ `F161`（2026-10-11 二十三/二十四轮）：**把 `displayCutout` 从让位里去掉**。
+ *
+ * 原来用的是 `WindowInsets.safeDrawing`，而 AndroidX 对它的定义是：
+ *
+ *     safeDrawing = systemBars ∪ displayCutout ∪ ime
+ *
+ * 也就是说它把**屏幕挖孔**也当成了一块"禁区"。可清单主题里明明写着
+ * `windowLayoutInDisplayCutoutMode=shortEdges`（本意就是"内容可以伸进挖孔区"）
+ * ⇒ **代码自己跟自己打架**。
+ *
+ * ⚠ 为什么在**荣耀 400 Pro** 上才暴露（2026-10-11 佘先生实测）：
+ *   · 荣耀 400 Pro = **居中单挖孔**。手机一横过来，挖孔就跑到**屏幕左侧**，
+ *     于是 `displayCutout.left > 0` ⇒ 内容被整体**推右**（`top` 推下）
+ *     ⇒ 正是他报的「显示在屏幕右下角」；
+ *   · 横屏时挖孔落在**长边**上，`SHORT_EDGES` 只对**短边**的挖孔授予延伸
+ *     ⇒ 系统照样把 cutout 报成 inset ⇒ 被 `safeDrawing` 收进来 ⇒ 让位。
+ *   · vivo Z5 = 水滴屏 + Android 9，横屏那侧的 cutout inset 极小/不上报
+ *     ⇒ 老机器上一直看不出来（`F157` 当时也就没发现这一层）。
+ *
+ * ⇒ 现在只留**真正的系统栏**（状态栏 / 导航栏）+ **输入法**：
+ *     systemBars ∪ ime   ← 等于 `safeDrawing` 减去 `displayCutout`
+ *   挖孔交给 `shortEdges` 去处理（内容可以伸进去），**不再为它让位**。
+ *   ⚠ `ime` 必须保留 —— 封面编辑（竖屏）有文字输入，去掉键盘就会压住输入框。
+ *   ⚠ 竖屏（封面编辑）时挖孔本来就在顶部、与状态栏重叠 ⇒ 这条改动对它是**零影响**。
+ * ═══════════════════════════════════════════════════════════════════════════
  */
 @Composable
 internal fun Modifier.sysBars(forceRecalc: Any? = null): Modifier =
-    this.windowInsetsPadding(WindowInsets.safeDrawing)
+    this.windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.ime))
 
 /**
  * 书架：列出内置演示书 + `files/books` 下每本用户书，点一本进它。
@@ -372,8 +408,11 @@ private fun ShelfScreen(root: File, appCtx: Context) {
     }
 
     /**
-     * 书架 = **书库(SAF)里的书** + **本机/内置书**，按目录名去重。
+     * 书架 = **内置教学画册** + **书库(SAF)里的书** + **本机/内置书**，按目录名去重。
      *
+     * ★ 内置教学画册（guide）**永远排第一**：用户一打开 App 就该看到使用说明。
+     *   ⚠ 只在书架这一句里置顶是不够的 —— `scanBooks` 那边书库那批照样排在它前面
+     *     （书库的书有 11 本，`local` 只有 guide 一本）⇒ 必须在这句拼表时**单独提前**。
      * ★ 书库那批**排前面**：他绑定的那个文件夹才是"自己出的书"的默认落点
      *   （出书默认路径 = 书库，见 `LibraryStore.outputTree`）。
      * ★ 去重口径是**目录名** —— 同一本书既在书库、又被取到本机过时，只显一张卡。
@@ -381,6 +420,9 @@ private fun ShelfScreen(root: File, appCtx: Context) {
     val books = remember(local, ext) {
         val seen = HashSet<String>()
         val out = ArrayList<Book>()
+        // ① 内置教学画册置顶（它同时在 local 里，靠 seen 保证不会重复出现）
+        local.forEach { b -> if (b.key == GUIDE_BOOK_KEY && seen.add(b.key)) out += b }
+        // ② 书库(SAF)里的书
         ext.forEach { e ->
             if (seen.add(e.dirName)) {
                 out += Book(
@@ -390,6 +432,7 @@ private fun ShelfScreen(root: File, appCtx: Context) {
                 )
             }
         }
+        // ③ 本机/内置书（guide 已在 ① 进过 seen，这里自动跳过）
         local.forEach { b -> if (seen.add(b.key)) out += b }
         out
     }
@@ -578,7 +621,7 @@ private fun ShelfScreen(root: File, appCtx: Context) {
                         onLongPress = {
                             when {
                                 // 内置演示书打在 APK 里，删不掉 —— 直接说清楚，不给对话框
-                                b.builtin -> tip = "「${b.title}」是内置演示书，删不掉（它打在 App 里）"
+                                b.builtin -> tip = "「${b.title}」是内置书，删不掉（它打在 App 里）"
                                 deleting -> tip = "正在删上一本，稍等一下"
                                 else -> { delAsk = b; tip = "" }
                             }
