@@ -75,7 +75,7 @@ import java.io.InputStream
  *   · **零权限、零文件系统暴露**
  *
  * 两类书的 URL
- *   · 内置演示书（打包在 assets）  `https://<域>/books/book1/index.html`
+ *   · 内置书（打包在 assets）      `https://<域>/books/guide/index.html`
  *   · 用户出的书（私有目录）      `https://<域>/ubooks/<书名>/index.html`
  *
  * ★★★「绝不能出现系统『网页无法打开』」—— 四道闸（本文件的全部重点）
@@ -158,8 +158,8 @@ class BookPageActivity : ComponentActivity() {
             // 两类书各挂一个前缀。⚠ 两个 handler 都不是想当然的那个：
             //   · 内置书：**不能用自带的 `AssetsPathHandler`** —— 它把我注册的前缀
             //     （`/books/`）**去掉之后**再当路径用 ⇒ 它会去 **assets 根下**找
-            //     `book1/index.html`，而我的书在 `assets/books/book1/` ⇒
-            //     内置书报 `ERR_INVALID_RESPONSE`（日志：`Error opening asset path: book1/index.html`）。
+            //     `guide/index.html`，而我的书在 `assets/books/guide/` ⇒
+            //     内置书报 `ERR_INVALID_RESPONSE`（日志：`Error opening asset path: guide/index.html`）。
             //   · 用户书：自带的 `InternalStoragePathHandler` 只认内部 `dataDir`/`cacheDir`，
             //     **外置私有目录用不了** ⇒ 也得自己写。
             //   结论：两个都自己写，都带一个"base 目录"概念。
@@ -715,9 +715,9 @@ private fun injectShellPatches(view: WebView, fullscreen: Boolean) {
  *
  * ⚠ 为什么不用自带的 `WebViewAssetLoader.AssetsPathHandler`：
  *   它收到的是**已经把注册前缀去掉的**路径。注册 `/books/` 时，
- *   `…/books/book1/index.html` 传进 handler 就变成了 `book1/index.html`，
- *   它便去 **assets 根下**找 —— 而书实际在 `assets/books/book1/`。
- *   症状：内置书 `ERR_INVALID_RESPONSE`，日志 `Error opening asset path: book1/index.html`。
+ *   `…/books/guide/index.html` 传进 handler 就变成了 `guide/index.html`，
+ *   它便去 **assets 根下**找 —— 而书实际在 `assets/books/guide/`。
+ *   症状：内置书 `ERR_INVALID_RESPONSE`，日志 `Error opening asset path: guide/index.html`。
  *   （我这次就栽在这，一度以为是打包漏了文件。）
  */
 internal class AssetsDirHandler(

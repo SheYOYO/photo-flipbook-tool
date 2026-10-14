@@ -93,6 +93,14 @@ fun PreviewPane(
     title: String,
     subtitle: String,
     coverText: Map<String, CoverConf> = emptyMap(),
+    /**
+     * ★ R30b：封面照片取景（序号 1 那张）—— 从草稿带过来，**进 payload**。
+     *
+     * 为什么进 payload 而不只靠 `setCoverPhoto` 推：推一次是"页面已加载"才好用的快路，
+     * 而**冷启动恢复草稿**时页面还没就绪（推了也丢）⇒ 跟着 payload 走才万无一失。
+     * （返回封面编辑页那条路照旧推一次，页面已在，立刻见效。）
+     */
+    coverPhoto: DraftStore.Draft.CoverPhoto? = null,
     controller: PreviewController? = null,
     modifier: Modifier = Modifier,
     onPlan: (String) -> Unit = {},
@@ -113,6 +121,8 @@ fun PreviewPane(
      *   这样**翻页/出书**拿到的都是新位置（跟手动的「左右/上下」滑块同一条通路）。
      */
     onCoverMove: (String) -> Unit = {},
+    /** ★ R30：封面照片取景（序号 1 那张）被拖动/缩放过 ⇒ 回传 {x,y,z}。 */
+    onCoverPhoto: (String) -> Unit = {},
     /**
      * ★★ 第十五轮（2026-10-09）：**只画封面**模式 —— 给竖屏封面编辑页用。
      *
@@ -149,6 +159,9 @@ fun PreviewPane(
                 .addPathHandler("/shell/", AssetsDirHandler(c, "_shell"))
                 .addPathHandler("/books/", AssetsDirHandler(c, "books"))
                 .addPathHandler("/picked/", FilesPathHandler(pickedDir))
+                // ★ 2026-10-11：用户字体库（全局 `files/user_fonts`）—— 预览页的 @font-face 指到这儿。
+                //   与 `/picked/` 同一种做法（都映射 App 私有目录），**只增不改**，不影响任何旧行为。
+                .addPathHandler("/fonts/", FilesPathHandler(FontStore.dir(c)))
                 .build()
 
             WebView(c).apply {
@@ -264,6 +277,16 @@ fun PreviewPane(
                     fun onCoverMove(json: String) {
                         Handler(Looper.getMainLooper()).post { onCoverMove(json) }
                     }
+
+                    /**
+                     * ★★ R30（2026-10-13）：**封面照片取景**松手回报 `{x,y,z}`
+                     *   （x/y = 取景中心百分比、z = 缩放 1~4）。
+                     * ⚠ 与 `onCoverMove` 一样必须搬回主线程 —— 里面要动 Compose 状态。
+                     */
+                    @JavascriptInterface
+                    fun onCoverPhoto(json: String) {
+                        Handler(Looper.getMainLooper()).post { onCoverPhoto(json) }
+                    }
                 }, "PreviewBridge")
 
                 // ★ 出书（M5）要写文件 ⇒ 单独的桥。
@@ -275,9 +298,16 @@ fun PreviewPane(
                     fun publishBook(dirId: String, html: String, planJson: String): String =
                         BookWriter.writeBook(c, dirId, html, planJson)?.absolutePath ?: ""
 
+                    /**
+                     * ★★ 2026-10-12（F164）：**写真**—— 传文件名 + 源路径 + 成品尺寸，
+                     *   由 Kotlin 解码/转正/缩放/压 JPEG 落盘（**不再过 base64 大桥**，
+                     *   实测那套路子 90 张要 6.6 s 编码 + 37.5 MB 字符串，见 BookWriter.writeArtwork）。
+                     *   [srcPath] 形如 `/picked/<文件名>` 或 `/books/<书>/assets/photos/<文件名>`。
+                     */
                     @JavascriptInterface
-                    fun addBookPhoto(dirPath: String, fileName: String, dataUrl: String): Boolean =
-                        BookWriter.addPhoto(File(dirPath), fileName, dataUrl)
+                    fun addBookPhoto(
+                        dirPath: String, fileName: String, srcPath: String, w: Int, h: Int
+                    ): Boolean = BookWriter.writeArtwork(c, File(dirPath), fileName, srcPath, w, h)
 
                     @JavascriptInterface
                     fun progress(text: String) {
@@ -331,7 +361,7 @@ fun PreviewPane(
     LaunchedEffect(ready, fingerprint) {
         val wv = webRef ?: return@LaunchedEffect
         if (!ready) return@LaunchedEffect
-        val payload = buildPayloadJson(ctx, photos, title, subtitle, coverText)
+        val payload = buildPayloadJson(ctx, photos, title, subtitle, coverText, coverPhoto)
         Log.i("Preview", "送去预览：${photos.size} 张 · ${payload.length} 字符")
         wv.evaluateJavascript(
             "window.__preview && window.__preview.render($payload)", null)
@@ -361,27 +391,65 @@ fun PreviewPane(
  * 封面文字的出厂默认（书名 / 副标题）。
  *
  * ⚠ **第二十轮口径统一**：空标题 = 空标题，三处（本处、工作台输入框初值、预览页 JS）
- *   都不再把空串兜底成"我的小狗"。首屏观感仍由 Compose 的 `title = DEFAULT_TITLE` 提供，
- *   但用户一旦清空/删除，谁都不许再自动塞回默认字（这正是他报"死板固定/删不掉"的根因）。
+ *   都不再把空串兜底成某个默认字。用户一旦清空/删除，谁都不许再自动塞回默认字
+ *   （这正是他报"死板固定/删不掉"的根因）。
+ *
+ * ★★ **R31（2026-10-14，他 2026-10-14 报）**：默认字**必须中性、规范**。
+ *   原来出厂默认是 `我的小狗` / `Photographs` ⇒ 他新做的每一本画册封面都顶着
+ *   "我的小狗"，看着像**残留的样板文字**而不是他自己的书名。
+ *   ⇒ 改成规范占位：标题 `画册 N`（**按已有本地书数递增**），副标题 `副标题`。
+ *
+ * ⚠ 为什么标题**不能是常量**：编号得看当前已有几本 ⇒ 必须是 [defaultBookTitle] 函数。
+ *   常量 `DEFAULT_TITLE` 已删除（它唯一的用途就是给 Compose 当初值）。
+ *   ⚠ 判据 [isDefaultText] 因此改成**认编号形态**（`画册 1` / `画册 12` 都算默认），
+ *   否则用户把自动名原样留着时会被当成"改过了"，草稿永远清不掉。
  */
-internal const val DEFAULT_TITLE = "我的小狗"
-internal const val DEFAULT_SUBTITLE = "Photographs"
+internal const val DEFAULT_SUBTITLE = "副标题"
+
+/** 规范书名的形态：`画册 1`、`画册 2`…（编号只认阿拉伯数字，空格可有可无）。 */
+private val AUTO_TITLE_RE = Regex("^画册\\s*\\d+$")
+
+/**
+ * 自动书名 = `画册 (已有本地书数 + 1)`。
+ *
+ * 口径（佘先生 2026-10-14 定的）：
+ * · 只数**用户自己出的书**（`files/books/` 下带 `index.html` 的目录）；
+ * · **内置教学画册不计号** —— 它是说明书，不该占掉"画册 1"这个序号；
+ * · **历史书不回溯改名** —— 已出的书名字不动，只有**新出的书**才走规范名。
+ *
+ * ⚠ 这也是他要求"新出的书一定要规范"里"新"字的那一半：老书一律不碰。
+ */
+internal fun defaultBookTitle(context: Context): String {
+    val n = try {
+        BookWriter.booksRoot(context).listFiles()
+            ?.count { it.isDirectory && File(it, "index.html").isFile } ?: 0
+    } catch (t: Throwable) {
+        Log.w("Preview", "数已有画册失败，退回「画册 1」", t)
+        0
+    }
+    return "画册 ${n + 1}"
+}
 
 /**
  * ★ 第十九轮（代码优化）：书名/副标题是否还是「出厂默认」—— **三处重复的判据合一**。
  *
  * 原本 `Draft.isEmpty` / `DraftStore.saveNow` / `WorkbenchActivity.saveDraftSoon` 三处
- * 各写了一遍 `(title.isBlank() || title == DEFAULT_TITLE) && (subtitle… )`。
+ * 各写了一遍 `(title.isBlank() || title == 默认字) && (subtitle… )`。
  * 语义 = 「书名和副标题都还是默认/空」⇒ 才算"文字没动过"。
+ *
+ * ★★ **R31**：默认书名不再是一个常量，而是 [defaultBookTitle] 每次按已有书数算出来的
+ *   ⇒ 判据必须**认形态**（[AUTO_TITLE_RE]）而不是认某一个固定字符串，
+ *   否则「画册 1」和「画册 2」会一个算默认、一个不算。
  */
 internal fun isDefaultText(title: String, subtitle: String): Boolean =
-    (title.isBlank() || title == DEFAULT_TITLE) &&
+    (title.isBlank() || AUTO_TITLE_RE.matches(title.trim())) &&
         (subtitle.isBlank() || subtitle == DEFAULT_SUBTITLE)
 
 /** 拼 payload（照片 URL 必须是虚拟域的**绝对**地址，否则引擎读不到图）。 */
 private fun buildPayloadJson(
     context: Context, photos: List<PhotoRef>, title: String, subtitle: String,
     coverText: Map<String, CoverConf>,
+    coverPhoto: DraftStore.Draft.CoverPhoto? = null,
 ): String {
     val arr = JSONArray()
     photos.forEachIndexed { i, p ->
@@ -390,6 +458,10 @@ private fun buildPayloadJson(
             put("order", i + 1)
             put("name", previewNameOf(p))
             put("url", previewUrlOf(p))
+            // ★ F166：照片指纹（长度+最后修改时间）—— 预览页拿它当**探针缓存的失效键**。
+            //   照片被替换/改过 ⇒ 指纹变 ⇒ 缓存键失效 ⇒ 自动回退重新解码，绝不用旧数据冒充新图。
+            //   ⚠ 内置素材 `file` 为 null ⇒ 用 key（随包不变，恒命中缓存，正合适）。
+            put("stamp", photoStampOf(p))
             // 用户改过的档位 —— 预览页会在 `assignPlates` 之后把它们盖上去
             p.plate?.let { put("plate", it) }
             p.position?.let { put("position", it) }
@@ -398,12 +470,59 @@ private fun buildPayloadJson(
     return JSONObject().apply {
         put("photos", arr)
         // ★★ 第二十轮：不再回落默认 —— 空标题就是空标题（用户要求封面文字不"死板固定"、
-        //   能真正删空）。默认初值仍由 Compose 的 `title = DEFAULT_TITLE` 提供首屏观感，
-        //   但一旦用户清空/删除，绝不再自动塞回"我的小狗"。
+        //   能真正删空）。默认初值仍由 Compose 的 `title = defaultBookTitle(ctx)` 提供首屏观感，
+        //   但一旦用户清空/删除，绝不再自动塞回默认字（R31 起默认字 = `画册 N` / `副标题`）。
         put("title", title)
         put("subtitle", subtitle)
         put("coverText", coverTextJson(coverText))
+        // ★ R30b：封面照片取景 —— **只带非默认值**（默认就不写这个字段，
+        //   老书/没调过的场景 payload 与从前逐字节一致，页面那边也不会动 CP）。
+        if (coverPhoto != null && !coverPhoto.isDefault) {
+            put("coverPhotoView", JSONObject().apply {
+                put("x", coverPhoto.x.toDouble())
+                put("y", coverPhoto.y.toDouble())
+                put("z", coverPhoto.z.toDouble())
+            })
+        }
+        // ★ 2026-10-11：用户字体（全局库）—— 预览页据此注入 @font-face 并喂给引擎的
+        //   `setFontFamilies`（内置四项照旧由引擎兜底，这里只补 `ufN` 那几条）。
+        put("userFonts", userFontsJson(context))
     }.toString()
+}
+
+/**
+ * ★ F166：一张照片的**内容指纹**（长度 + 最后修改时间）。
+ *
+ * 为什么需要它：预览页要给探针结果做缓存（换封面/拖排序时照片一张没变，
+ * 不该把 90 张重新解码一遍）。缓存键若只用 url，文件被替换后就会**拿旧数据冒充新图**。
+ * 加上长度+时间 ⇒ 内容一变键就变 ⇒ 自动回退重新解码。
+ * ⚠ 内置素材没有 `file`（在 assets 里）⇒ 用 key 兜底：它随包不变，恒命中缓存正是我们要的。
+ */
+private fun photoStampOf(p: PhotoRef): String {
+    val f = p.file
+    if (f == null) return p.key
+    return try { "${f.length()}_${f.lastModified()}" }
+    catch (t: Throwable) { p.key }
+}
+
+/**
+ * 用户字体清单：`[{key,name,url}]`。
+ * `url` 是虚拟域下的 `/fonts/<文件>`（由 [FontStore.dir] 那个路径处理器提供）。
+ */
+internal fun userFontsJson(context: Context): JSONArray {
+    val arr = JSONArray()
+    try {
+        FontStore.list(context).forEach { f ->
+            arr.put(JSONObject().apply {
+                put("key", f.key)
+                put("name", f.name)
+                put("url", previewBase() + "/fonts/" + Uri.encode(f.file))
+            })
+        }
+    } catch (t: Throwable) {
+        Log.w("Preview", "读用户字体清单失败（当没有）", t)
+    }
+    return arr
 }
 
 /**
@@ -453,6 +572,14 @@ class PreviewController {
 
     /** 重新自动排版（引擎按清晰度名次重算全部档位）。 */
     fun autoArrange() = call("window.__preview && window.__preview.autoArrange()")
+
+    /**
+     * ★ R30：推**封面照片取景**（`{x,y,z}`）—— 进页面恢复草稿时用。
+     * 走快路（不重画）：那边只改 img 的 object-position / transform。
+     */
+    fun setCoverPhoto(json: String) {
+        castJsonString(json)?.let { call("window.__preview && window.__preview.setCoverPhoto($it)") }
+    }
 
     /** 改封面文案（传 [coverTextJson] 的 JSON 字符串）。 */
     fun setCover(json: String) {

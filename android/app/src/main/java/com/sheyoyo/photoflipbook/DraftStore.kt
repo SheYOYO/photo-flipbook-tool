@@ -41,8 +41,21 @@ object DraftStore {
         val perPhoto: Map<String, PhotoEdit>,
         /** 封面元素（title/subtitle/foot + 文字框 xN）的样式覆盖（含文字框的 `text`）。 */
         val cover: Map<String, CoverConf>,
+        /**
+         * ★ R30（2026-10-13）：**封面照片的取景**（序号 1 那张）—— 拖动/捏合调出来的
+         * x/y（取景中心，封面宽高的百分比）与 z（缩放 1~4）。null = 没调过 = 默认
+         * {50, 46, 1}（= 引擎 CSS 的 `object-position: 50% 46%`，与从前逐像素一致）。
+         * 出书时由 preview.html 烧进成品书的 <style>，草稿里也存一份（进页面接着调）。
+         */
+        val coverPhoto: CoverPhoto? = null,
     ) {
         data class PhotoEdit(val plate: String?, val position: String?)
+
+        /** 封面照片取景（[coverPhoto] 的值）。 */
+        data class CoverPhoto(val x: Float, val y: Float, val z: Float) {
+            val isDefault: Boolean
+                get() = z <= 1.0001f && Math.abs(x - 50f) < 0.01f && Math.abs(y - 46f) < 0.01f
+        }
 
         /**
          * ★ 2026-10-08（第四轮）修：判据必须**把书名/副标题算进来**。
@@ -54,6 +67,7 @@ object DraftStore {
          */
         val isEmpty: Boolean
             get() = perPhoto.isEmpty() && cover.isEmpty() && footText.isBlank() &&
+                (coverPhoto == null || coverPhoto.isDefault) &&
                 isDefaultText(title, subtitle)
     }
 
@@ -68,7 +82,8 @@ object DraftStore {
      */
     fun save(context: Context, title: String, subtitle: String,
               keys: List<String>, edits: Map<String, Draft.PhotoEdit>,
-              cover: Map<String, CoverConf>, footText: String = "") {
+              cover: Map<String, CoverConf>, footText: String = "",
+              coverPhoto: Draft.CoverPhoto? = null) {
         try {
             val o = JSONObject()
             o.put("title", title)
@@ -87,6 +102,14 @@ object DraftStore {
             o.put("edits", arr)
             val coverJson = coverJsonOf(cover)
             if (coverJson.length() > 0) o.put("cover", coverJson)
+            // ★ R30：封面照片取景。null = 调用方没这个口径 ⇒ **保留磁盘上的旧值**
+            //   （工作台退出时也会存草稿，它没有这个状态，不能把封面编辑页调的取景冲掉）。
+            val cp = coverPhoto ?: load(context)?.coverPhoto
+            if (cp != null && !cp.isDefault) {
+                val cpo = JSONObject()
+                cpo.put("x", cp.x.toDouble()); cpo.put("y", cp.y.toDouble()); cpo.put("z", cp.z.toDouble())
+                o.put("coverPhoto", cpo)
+            }
             // ★ 先写 .tmp 再改名：中途被杀不会留半个损坏草稿（跟 importBook 同一个坑）
             val f = file(context)
             val tmp = File(context.filesDir, "$FILE.tmp")
@@ -107,7 +130,8 @@ object DraftStore {
      * 只能在这儿把存取两件事收在一个函数里。
      */
     fun saveNow(context: Context, photos: List<PhotoRef>, title: String, subtitle: String,
-                cover: Map<String, CoverConf>, footText: String = "") {
+                cover: Map<String, CoverConf>, footText: String = "",
+                coverPhoto: Draft.CoverPhoto? = null) {
         val edits = HashMap<String, Draft.PhotoEdit>()
         for (p in photos) {
             if (p.plate != null || p.position != null) {
@@ -116,8 +140,9 @@ object DraftStore {
         }
         // ★ 判据与 [Draft.isEmpty] 同一套：只改了书名/副标题也算"有内容"，不能 clear
         val textDefault = isDefaultText(title, subtitle)
-        if (edits.isEmpty() && cover.isEmpty() && textDefault && footText.isBlank()) clear(context)
-        else save(context, title, subtitle, photos.map { it.key }, edits, cover, footText)
+        val cpDefault = (coverPhoto ?: load(context)?.coverPhoto)?.isDefault ?: true
+        if (edits.isEmpty() && cover.isEmpty() && textDefault && footText.isBlank() && cpDefault) clear(context)
+        else save(context, title, subtitle, photos.map { it.key }, edits, cover, footText, coverPhoto)
     }
 
     /** 封面配置 → JSON。与 [coverTextJson] 逐字段一致，直接委托它（第十九轮合并重复）。 */
@@ -161,12 +186,22 @@ object DraftStore {
                     )
                 }
             }
+            var coverPhoto: Draft.CoverPhoto? = null
+            val cpo = o.optJSONObject("coverPhoto")
+            if (cpo != null) {
+                coverPhoto = Draft.CoverPhoto(
+                    cpo.optDouble("x", 50.0).toFloat(),
+                    cpo.optDouble("y", 46.0).toFloat(),
+                    cpo.optDouble("z", 1.0).toFloat(),
+                )
+            }
             val d = Draft(
                 title = o.optString("title"),
                 subtitle = o.optString("subtitle"),
                 footText = o.optString("footText"),
                 perPhoto = edits,
                 cover = cover,
+                coverPhoto = coverPhoto,
             )
             if (d.isEmpty) null else d        // 全空 = 等于没草稿，删掉更干净
         }
