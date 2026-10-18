@@ -39,36 +39,49 @@
           <span class="outer-x left" aria-hidden="true"></span>
           <p class="folio"> 3</p>
         </article>
-        <article class="book-page art-page photo verso" aria-label="图 3">
-          <figure class="plate large"><img src="assets/photos/04-04.jpg" alt="第 3 张照片（竖构图）" width="853" height="1280" loading="eager" decoding="async"></figure>
+        <!-- ★ R40（2026-10-16，佘先生三次指示 + 一次纠偏）：
+               「先改原来的第四页」「在第四页和第五页的中间加一页」
+               「样式参照已有的格式」「不要在中间有空白页」「不要版权页那一张多余的」
+             ⇒ 第 4 页 = 书架说明卡、第 5 页 = 翻页说明卡，两页都是**图片页**
+               （与图 1/图 2 同款 plate 结构）；文字是渲染进图里的，与现有 6 张卡
+               同一套版式（853×1280、米白纸底、上下暖金细线带菱形、居中楷体两行、
+               底部页码），由 `tools/_render_guide_card.py` 照 02-02.jpg 像素反推
+               的参数渲出。
+             ⚠ 不要再往这两页塞 HTML 文字（`.colophon`）：① 壳层 layout.js 第 20)
+               条把 colophon 整块 display:none（真机上是空白页）；② 老内核不认
+               cqw 字号。文字烤进图里，这两个坑都不存在。
+             ⚠ 页码：卡片内页码 = 书内 folio − 1（与现有 6 张卡同一口径，
+               02-02 卡是"1"而书里 folio 是 2）；页脚那层 `.folio` 照旧保留
+               （第八轮他明说"页码留"）。 -->
+        <article class="book-page art-page photo verso" aria-label="书架说明">
+          <figure class="plate large"><img src="assets/photos/04-04.jpg" alt="书架是您放置画册的地方，其中的教学画册可以隐藏" width="853" height="1280" loading="eager" decoding="async"></figure>
           <span class="outer-y top" aria-hidden="true"></span>
           <span class="outer-y bottom" aria-hidden="true"></span>
           <span class="outer-x right" aria-hidden="true"></span>
           <p class="folio"> 4</p>
         </article>
-        <article class="book-page art-page photo recto" aria-label="图 4">
-          <figure class="plate large"><img src="assets/photos/05-05.jpg" alt="第 4 张照片（竖构图）" width="853" height="1280" loading="eager" decoding="async"></figure>
+        <article class="book-page art-page photo recto" aria-label="翻页说明">
+          <figure class="plate large"><img src="assets/photos/07-07.jpg" alt="画册可以手动翻页，也可以自动翻页，速度可以调节" width="853" height="1280" loading="eager" decoding="async"></figure>
           <span class="outer-y top" aria-hidden="true"></span>
           <span class="outer-y bottom" aria-hidden="true"></span>
           <span class="outer-x left" aria-hidden="true"></span>
           <p class="folio"> 5</p>
         </article>
-        <article class="book-page art-page photo verso" aria-label="图 5">
-          <figure class="plate large"><img src="assets/photos/06-06.jpg" alt="第 5 张照片（竖构图）" width="853" height="1280" loading="eager" decoding="async"></figure>
+        <article class="book-page art-page photo verso" aria-label="图 4">
+          <figure class="plate large"><img src="assets/photos/05-05.jpg" alt="第 4 张照片（竖构图）" width="853" height="1280" loading="eager" decoding="async"></figure>
           <span class="outer-y top" aria-hidden="true"></span>
           <span class="outer-y bottom" aria-hidden="true"></span>
           <span class="outer-x right" aria-hidden="true"></span>
           <p class="folio"> 6</p>
         </article>
-        <article class="book-page art-page paper recto" aria-label="版权页">
-          <div class="colophon">
-            <p>hello</p>
-            <p>画册使用说明</p>
-            <p class="small-print">5 页说明 · 本地生成</p>
-          </div>
+        <article class="book-page art-page photo recto" aria-label="图 5">
+          <figure class="plate large"><img src="assets/photos/06-06.jpg" alt="第 5 张照片（竖构图）" width="853" height="1280" loading="eager" decoding="async"></figure>
+          <span class="outer-y top" aria-hidden="true"></span>
+          <span class="outer-y bottom" aria-hidden="true"></span>
+          <span class="outer-x left" aria-hidden="true"></span>
           <p class="folio"> 7</p>
         </article>
-        <article class="book-page art-page cloth verso" data-density="hard" aria-label="封底">
+        <article class="book-page art-page cloth recto" data-density="hard" aria-label="封底">
           <span class="back-mark">hello</span>
         </article>
       </div>

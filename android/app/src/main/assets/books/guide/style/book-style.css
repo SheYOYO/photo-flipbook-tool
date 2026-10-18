@@ -160,22 +160,31 @@
 .book-page.art-page.photo.--left::after{content:"";position:absolute;inset-block:0;right:0;z-index:4;width:2px;pointer-events:none;background:linear-gradient(to right,transparent,rgb(18 20 15 / 28%) 55%,rgb(18 20 15 / 40%))}
 .book-page.art-page.photo.--right::after{content:"";position:absolute;inset-block:0;left:0;z-index:4;width:2px;pointer-events:none;background:linear-gradient(to left,transparent,rgb(18 20 15 / 28%) 55%,rgb(18 20 15 / 40%))}
 
-/* ---- 照片外侧边缘的一圈淡阴影 ----
+/* ---- 照片外侧边缘的一圈淡阴影（**内阴影**）----
    只加「没有和另一页相接」的那几条边：
      左页（verso）—— 上、左、下；右页（recto）—— 上、右、下。
    贴中线的那条边不加，那里已经交给上面的跨页过渡处理，再加就重了。
 
    做法是两个方向各画一条极淡的黑色渐变（上 + 下 用同一个元素做不到方向相反，
    所以上下由 outer-y 管、左右由 outer-x 管），然后靠 opacity 统一压强度。
-   目前是「只要一点」的量级：最深处约 9%。
+
+   ★★ R34（2026-10-15）他报「边缘内阴影太深、范围也太大」⇒ 三项一起收：
+        范围  上下 7% → 3%     左右 6% → 2.5%   （约砍到原来的四成）
+        深度  14%→ 5%
+        不透明 .72 → .45
+        ⇒ **边沿等效黑度 10.1% → 2.3%**（原来的一半都不到）
+   ⚠ 只动**内**阴影（就是本段这四条 + 上面那条 opacity）。
+     **外阴影一个字不改** —— `.art-page .cover-plate{box-shadow:…}` 是封面小图的外投影、
+     `.art-page img{box-shadow:none}` 是照片本体无外投影，两套规则互不重叠。
+   ⚠ 别改回 `inset` 关键字（下面 1019 行那条契约测试会红）。
 
    层级：z-index:4，和纸缝线同级。两者永远不会碰面 ——
    纸缝只在贴中线那条边上，外侧阴影只在其余三条边上，互不重叠。 */
 .book-page.art-page.photo .outer-x,
-.book-page.art-page.photo .outer-y{position:absolute;z-index:4;pointer-events:none;opacity:.72}
-.book-page.art-page.photo .outer-y{inset-inline:0;height:7%}
-.book-page.art-page.photo .outer-y.top{top:0;background:linear-gradient(to bottom,rgb(0 0 0 / 14%),transparent)}
-.book-page.art-page.photo .outer-y.bottom{bottom:0;background:linear-gradient(to top,rgb(0 0 0 / 14%),transparent)}
-.book-page.art-page.photo .outer-x{inset-block:0;width:6%}
-.book-page.art-page.photo.--left .outer-x.left{left:0;background:linear-gradient(to right,rgb(0 0 0 / 14%),transparent)}
-.book-page.art-page.photo.--right .outer-x.right{right:0;background:linear-gradient(to left,rgb(0 0 0 / 14%),transparent)}
+.book-page.art-page.photo .outer-y{position:absolute;z-index:4;pointer-events:none;opacity:.45}
+.book-page.art-page.photo .outer-y{inset-inline:0;height:3%}
+.book-page.art-page.photo .outer-y.top{top:0;background:linear-gradient(to bottom,rgb(0 0 0 / 5%),transparent)}
+.book-page.art-page.photo .outer-y.bottom{bottom:0;background:linear-gradient(to top,rgb(0 0 0 / 5%),transparent)}
+.book-page.art-page.photo .outer-x{inset-block:0;width:2.5%}
+.book-page.art-page.photo.--left .outer-x.left{left:0;background:linear-gradient(to right,rgb(0 0 0 / 5%),transparent)}
+.book-page.art-page.photo.--right .outer-x.right{right:0;background:linear-gradient(to left,rgb(0 0 0 / 5%),transparent)}
