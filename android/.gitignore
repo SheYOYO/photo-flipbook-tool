@@ -7,3 +7,11 @@ captures/
 .externalNativeBuild/
 **/build/
 **/.cxx/
+
+# 本地临时/备份/产物（不入库）
+*.apk
+*.aab
+*.log
+*.bak
+*.bak-*
+_r31_sfx/
