@@ -368,6 +368,10 @@ private fun ShelfScreen(root: File, appCtx: Context) {
      * ⇒ 按 key 回去查会查不到（对象已经换了一批新的）。
      */
     var delAsk by remember { mutableStateOf<Book?>(null) }
+
+    // ★★ R34（2026-10-15）：长按内置教学画册弹的是「隐藏」，不是「删除」
+    //   ⇒ 用**另一个**状态位，不能复用 delAsk（那边确认按钮写死"删除"，会误删）。
+    var hideAsk by remember { mutableStateOf<Book?>(null) }
     /** 正在删（防止连点两下重复删同一本）。 */
     var deleting by remember { mutableStateOf(false) }
 
@@ -417,11 +421,25 @@ private fun ShelfScreen(root: File, appCtx: Context) {
      *   （出书默认路径 = 书库，见 `LibraryStore.outputTree`）。
      * ★ 去重口径是**目录名** —— 同一本书既在书库、又被取到本机过时，只显一张卡。
      */
-    val books = remember(local, ext) {
+    // ★★ R34（2026-10-15）「隐藏教学画册」：**隐藏 = 彻底不出现在书架上、不占格子。**
+    //   ⇒ 落点就在这张拼表里：把 guide 整本**不塞进 out**，
+    //     而不是"显示成灰色/加个隐藏标记" —— 那样它还占着一个格子。
+    //   ⚠ 依赖 `guideHidden` 进入 remember 的 key ⇒ 一点开关立刻重拼，不用重启。
+    //   ⚠ 只对 guide 生效：用户自己的书**永远不隐藏**（隐藏了就找不回来）。
+    // ⚠ 必须是 **state**：顶栏那颗开关一点就要重拼 `books`（教学画册当场消失/回来），
+    //   写成普通 val 的话点完不会立刻变，得重启App 才发现 —— 那等于开关坏了。
+    var guideHiddenState by remember { mutableStateOf(GuideHidePrefs.isHidden(appCtx)) }
+    val guideHidden = guideHiddenState
+    val books = remember(local, ext, guideHidden) {
         val seen = HashSet<String>()
         val out = ArrayList<Book>()
         // ① 内置教学画册置顶（它同时在 local 里，靠 seen 保证不会重复出现）
-        local.forEach { b -> if (b.key == GUIDE_BOOK_KEY && seen.add(b.key)) out += b }
+        if (!guideHidden) {
+            local.forEach { b -> if (b.key == GUIDE_BOOK_KEY && seen.add(b.key)) out += b }
+        } else {
+            // 隐藏时也要把它记进 seen，否则第③ 步会把它从local 又捞回来（那等于没隐藏）
+            local.forEach { b -> if (b.key == GUIDE_BOOK_KEY) seen.add(b.key) }
+        }
         // ② 书库(SAF)里的书
         ext.forEach { e ->
             if (seen.add(e.dirName)) {
@@ -524,11 +542,32 @@ private fun ShelfScreen(root: File, appCtx: Context) {
             //     那条 493px / 420px 的逐像素基准不能破。
             Spacer(Modifier.width(8.dp))
             Text(
-                "长按画册可删除",
+                // ★ R34：教学画册长按改成「隐藏」了 ⇒ 这行提示也要跟着改，
+                //   否则他长按教学画册看到"可删除"会以为找错了。
+                "长按画册可删除或隐藏",
                 color = Ink.copy(alpha = 0.34f), fontSize = 11.sp,
                 modifier = Modifier.testTag("shelf-hint")
             )
             Spacer(Modifier.weight(1f))
+
+            // ★★ R34（2026-10-15）：**内置画册 开/关** —— 放在「翻页声」左边，样式与它一致。
+            //   他的原话：「在右上方的翻页声开关组块的旁边放一个交互的组块，
+            //   显示为内置画册，后面接开关两字」
+            //   ⚠ 文案格式照翻页声那颗：开 = 「内置画册 开」，关 = 「内置画册 关」。
+            //   ⚠ 关掉 = 教学画册**从书架彻底消失**（见上面拼表处），随时能放回来。
+            //   ⚠ 默认显示（GuideHidePrefs 默认 false）⇒ 首次进来行为与以前一致。
+            Text(
+                if (guideHidden) "内置画册 关" else "内置画册 开",
+                color = if (guideHidden) Ink.copy(alpha = 0.42f) else Accent,
+                fontSize = 13.sp,
+                modifier = Modifier.testTag("shelf-guide-toggle").clickable {
+                    val next = !guideHidden
+                    GuideHidePrefs.setHidden(appCtx, next)
+                    guideHiddenState = next
+                    tip = if (next) "教学画册已从书架收起来了" else "教学画册已放回书架"
+                }
+            )
+            Spacer(Modifier.width(14.dp))
 
             // ★ 二十一轮（2026-10-10）：**翻页声开关** —— 放在「刷新」左边，样式与它一致。
             //   状态写进原生 SharedPreferences（[SfxPrefs]）⇒ 书页打开时注入给 WebView。
@@ -620,6 +659,12 @@ private fun ShelfScreen(root: File, appCtx: Context) {
                         ctx, b, i,
                         onLongPress = {
                             when {
+                                // ★★ R34（2026-10-15）：内置教学画册长按 = **弹「隐藏」**
+                                //   （他：「长摁书架上的画册后选择隐藏」）。
+                                //   ⚠ 原来这里直接tip 提示"删不掉" —— 那条路走不通，
+                                //     他要的"隐藏"根本走不到 ⇒ 现在换成一个真能用的动作。
+                                //   ⚠ 只对 guide 生效：用户自己的书长按仍然是「删除」。
+                                b.builtin && b.key == GUIDE_BOOK_KEY -> { hideAsk = b; tip = "" }
                                 // 内置演示书打在 APK 里，删不掉 —— 直接说清楚，不给对话框
                                 b.builtin -> tip = "「${b.title}」是内置书，删不掉（它打在 App 里）"
                                 deleting -> tip = "正在删上一本，稍等一下"
@@ -703,6 +748,61 @@ private fun ShelfScreen(root: File, appCtx: Context) {
     //     对话框是**另一个 ComposeView 根**，外层那个 `tagOn` 传不进来
     //     （uiautomator 就看不到这两颗钮 ⇒ 验收脚本会判"按钮不存在"，假红）。
     // ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    // ★★ R34（2026-10-15）「隐藏内置教学画册」对话框
+    //   他的原话：「内置的教学画册可以隐藏，就是长摁书架上的画册后选择隐藏」
+    //   +「隐藏是直接从书架上消失，不要占着位置」
+    //
+    //   ⛔ 文案要点明**不会丢**，否则他不敢点：
+    //     教学画册打在 App 里，本来就删不掉 ⇒ 隐藏只是"收起来"，
+    //     随时能在右上角那颗「内置画册」开关放回来。
+    //   ⚠ testTag 要额外挂 `semantics { testTagsAsResourceId = true }`（对话框是另一个 ComposeView 根）
+    // ══════════════════════════════════════════════════════════════════════
+    val hide = hideAsk
+    if (hide != null) {
+        AlertDialog(
+            onDismissRequest = { hideAsk = null },
+            modifier = Modifier.semantics { testTagsAsResourceId = true },
+            containerColor = Paper,
+            title = {
+                Text("隐藏这本教学画册？", color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+            },
+            text = {
+                Text(
+                    "「${hide.title}」会从书架上收起来，不再占位置。\n\n" +
+                        "它就打包在这个 App 里，不会删掉、也不会丢——" +
+                        "右上角「内置画册」那颗开关随时能放回来。",
+                    color = Ink.copy(alpha = 0.72f), fontSize = 13.sp, lineHeight = 21.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        hideAsk = null
+                        GuideHidePrefs.setHidden(appCtx, true)
+                        guideHiddenState = true
+                        tip = "教学画册已从书架收起来了"
+                    },
+                    modifier = Modifier
+                        .testTag("shelf-hide-ok")
+                        .semantics { testTagsAsResourceId = true }
+                ) {
+                    Text("隐藏", color = Accent, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { hideAsk = null },
+                    modifier = Modifier
+                        .testTag("shelf-hide-cancel")
+                        .semantics { testTagsAsResourceId = true }
+                ) {
+                    Text("取消", color = Ink.copy(alpha = 0.65f), fontSize = 15.sp)
+                }
+            },
+        )
+    }
+
     val ask = delAsk
     if (ask != null && !ask.builtin) {
         AlertDialog(

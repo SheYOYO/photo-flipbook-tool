@@ -381,6 +381,11 @@ private val SHELL_PATCHES = listOf(
     //   ⚠ 它自带版本闸门：新内核（认 `cqw`）自己什么都不做 ⇒ 零行为变化。
     "_shell/cqwfix.js" to "cqw 兜底换算",
     "_shell/layout.js" to "控制条布局",
+    // ★ R40 原计划的 `_shell/guidetext.js`（教学画册说明页恢复 colophon + cqw 换算）
+    //   已撤掉 —— 佘先生纠偏：「没让我自己随意加字」「要参照图片上的文字格式」。
+    //   第 4/5 页改成**图片页**（文字烤进 04-04.jpg / 07-07.jpg），文字不再走 HTML
+    //   ⇒ layout.js 藏 colophon 与老内核 cqw 失效这两个坑都碰不到了；版权页那一页
+    //   也按他要求删掉了。撤补丁比留着空转好（零误伤面）。
     "_shell/compat.js" to "版式补丁",
     "_shell/gesture.js" to "触屏手势",
     "_shell/speed.js" to "翻页速度",
