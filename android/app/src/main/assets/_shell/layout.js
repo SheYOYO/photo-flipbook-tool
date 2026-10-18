@@ -1028,7 +1028,7 @@
     '    radial-gradient(130% 120% at 50% 40%, rgb(0 0 0 / 0%) 40%, rgb(0 0 0 / 22%) 100%);',
     '}',
 
-    /* ---- ② 照片内侧暗角 + 极淡云斑：四边一致（补齐书上只画三条的那一条）---- */
+    /* ---- ② 照片内侧极淡云斑（四边暗角已于 2026-10-18 删除，见下）---- */
     '.art-page.photo .plate::after {',
     '  content: "";',
     '  position: absolute;',
@@ -1036,14 +1036,14 @@
     '  z-index: 2;',
     '  pointer-events: none;',
     '  background:',
-    /* 上 */
-    'linear-gradient(to bottom, rgb(18 20 15 / 26%), rgb(18 20 15 / 8%) 4%, transparent 9%),',
-    /* 下 */
-    'linear-gradient(to top, rgb(18 20 15 / 26%), rgb(18 20 15 / 8%) 4%, transparent 9%),',
-    /* 左 */
-    'linear-gradient(to right, rgb(18 20 15 / 22%), rgb(18 20 15 / 7%) 4%, transparent 8%),',
-    /* 右 */
-    'linear-gradient(to left, rgb(18 20 15 / 22%), rgb(18 20 15 / 7%) 4%, transparent 8%),',
+    /* ★★ 2026-10-18（佘先生）：「去除图片内部的阴影」—— 原先四条边的那圈
+     *   内暗角（上/下 26% 起、左/右 22% 起的 linear-gradient）**整组删除**。
+     *   历史因果：那圈暗角正是他早先自己点名要的「方案 2b」（原话「图片的
+     *   边缘和背景结合处太僵硬…缺少现实感」，要照片边缘「有厚度」）；
+     *   现在他反过来要求去掉（真机实测把那圈边缘压暗 245→203）⇒ 以本次为准。
+     *   ⚠ 只删图片**内部**暗角；图片**外部**投在木桌上的书影（下面 ③ 的
+     *   `.book-rig` box-shadow）按他的要求**原样保留**。
+     *   ⚠ 云斑（方案 4，相纸质感）不是阴影、实测亮度 +0.0%，保留。 */
     /* ★★ 方案 4 的「质感统一」——⚠⚠ 这里**曾经**用的是 `feTurbulence` 噪点，
      *   结果被他一眼看出「图片出现异常，有很多白噪点」——**已彻底删除**，原因：
      *
@@ -1064,10 +1064,11 @@
     'radial-gradient(38% 30% at 22% 26%, rgb(255 240 210 / 5%), transparent 70%),',
     'radial-gradient(34% 26% at 74% 68%, rgb(60 48 30 / 5%), transparent 70%),',
     'radial-gradient(46% 36% at 52% 46%, rgb(255 246 225 / 3.5%), transparent 72%);',
-    '  background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat, no-repeat;',
+    '  background-repeat: no-repeat, no-repeat, no-repeat;',
     '}',
     /*★ ① 他的要求：「**点进画册还未翻开时不要出现**，等我翻开（两个图片展示）时出现」。
-     *   ⚠ 实测（`F143`）：进书页的那一刻 `::after` 就已经生效（637 字符 / 7 个 gradient），
+     *   ⚠ 实测（`F143`）：进书页的那一刻 `::after` 就已经生效（原 637 字符 / 7 个 gradient；
+     *     2026-10-18 删掉四边暗角后只剩 3 个云斑 gradient，门控机制不变），
      *     而「是否翻开」**书没有给任何标记**（`.stf__item--current` 为 0、`html` 上无 class）。
      *   ⇒ 所以门控由壳自己加：`.shell-opened` **只有翻页后才挂上**（见下面的 `syncOpened()`）。
      *   ★ 用 `html` 上的 class 门控（与 `.fs-net` / `.fs-reading` 同一套语言），不碰任何布局属性。
