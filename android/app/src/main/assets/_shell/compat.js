@@ -183,14 +183,204 @@
       '.book[data-layout="landscape"][data-edge="front"] { transform: translateX(-25%); }',
       '.book[data-layout="landscape"][data-edge="back"]  { transform: translateX(25%); }',
       '/* 过渡：书的 `transition: translate` 老内核不认，换成 transform；',
-      '   包在 no-preference 里，尊重「减少动态效果」——那种偏好下不挂过渡。 */',
-      '@media (prefers-reduced-motion: no-preference) { .book { transition: transform 760ms ease; } }'
+      '   包在 no-preference 里，尊重「减少动态效果」——那种偏好下不挂过渡。',
+      '   ★ R48：filter 一起挂过渡 —— data-wb-open 撤掉后书影 300ms 淡回，不瞬现。 */',
+      '@media (prefers-reduced-motion: no-preference) { .book { transition: transform 760ms ease, filter 300ms ease; } }'
     ].join('\n');
     (document.head || document.documentElement).appendChild(st);
   })();
 
-  // ---- 补回老内核不认的 CSS 简写属性 `inset` -----------------------------
-  // 书的灯箱（Phase 35「照片上双击 ⇒ 这张单独全屏看」）靠这一条铺满整个视口：
+  // ---- ★★ R47：让「书的归位」与「翻动」同步（方案 A，2026-10-17）--------------
+  //
+  // 病灶（佘先生三问三答，与实测三重对齐）：
+  //   ·「所有画册都这样」  ⇒ 与内容无关，是书本身
+  //   ·「只有翻封面/后壳」 ⇒ 这两处是 data-edge 会从 front/back 变 inside 的**唯一**两处
+  //   ·「一直在，直到翻页结束」 ⇒ 不是闪帧，是一个**位置状态**
+  //
+  // 机制（tools/_cdp_r51_deep.py 实测，拖过 90° 按住不放）：
+  //   翻页**第一帧**，库就把下一跨页的两页按跨页位置**整张摆好**
+  //     （实测 `1..257 / 257..523`，合计 531 = 摊开大小）
+  //   而书壳还停在单页位置 —— `.book[data-edge=front]` 的 `translateX(-25%)`
+  //     ⇒ 书盒实测 `[-8..523]`；要等翻完、data-edge 变 inside，才由那条
+  //     760ms 过渡滑到 `[125..656]`。
+  //   ⇒ 整个翻动过程中，跨页内容比书壳**多伸出 133px**，那半页正搭在木桌背景上。
+  //   翻封面伸出在左、翻后壳伸出在右（对称）；翻内页时 data-edge 恒为 inside、
+  //   书本来就在 0 ⇒ 不会露出 —— 与「只有封面/后壳才有」完全吻合。
+  //
+  // 修法：翻动一开始就把目的地设上（`data-wb-open` ⇒ `translateX(0)`），书与翻动
+  //   **同时**滑动；掀动一停就撤掉，交回按 data-edge 的规则。
+  //   · 翻成：撤掉时两处同值（都是 0）⇒ 无跳变
+  //   · 回弹：edge 恒为 front ⇒ 由 CSS 的 760ms 过渡平滑滑回原位
+  //
+  // ⚠ 只加一条 CSS + 一个属性；**不碰透明度、不隐藏、不羽化**（R46 已把那些全撤了）。
+  // ⚠ 判据**只认 edge ∈ {front, back}**：翻内页时书本来就在 0，设了也是 0，
+  //    而且能避免「翻完之后 rotateY 还在 ⇒ 永远摘不掉 ⇒ 书被钉住」。
+  // ⚠ 用 `transform`（不是 `translate`）：本机 Chrome 83 **不认** `translate` 简写属性，
+  //    书自己的那条位移实际是靠上面 patchEdgeTranslate 的 transform 生效的。
+  //    `!important` 是必须的 —— 上面那条是「.book + 2 个属性」(0,3,0)，比这条重。
+  (function patchBookFollowsFlip() {
+    var book = document.getElementById('book');
+    if (!book) { return; }
+
+    var css = document.createElement('style');
+    css.id = 'compat-wb-open';
+    css.textContent = [
+      '@media (prefers-reduced-motion: no-preference) {',
+      '  /* 拖拽期间 flipbook.js 会给 .book 加 data-dragging 把过渡关掉；',
+      '     这里连同 transform 一起钉住，保证书是**滑**到位而不是瞬移。 */',
+      '  .book[data-layout="landscape"][data-wb-open] {',
+      '    transform: translateX(0) !important;',
+      '    transition: transform 760ms ease, filter 240ms ease !important;',
+      '  }',
+      '}',
+      '/* ★★ R48（2026-10-17）：翻动中**藏起书影**。',
+      '   佘先生验收 R47 仍未过：「一个和画册摊开大小相同的矩形，翻封面/后壳时',
+      '   瞬间出现在背景上，图片的展开需要时间」。R62 录屏逐帧 + R66 注入对照',
+      '   定位：R47 让书盒在翻动第一帧就滑向摊开位，书盒的 drop-shadow（一个',
+      '   摊开大小的矩形暗影）随之**瞬间铺在木桌背景上**——而左页图片要随',
+      '   rotateY 从书脊往外展开 340ms 才到，观感就是「矩形先出现、图片后到」。',
+      '   修法：data-wb-open 期间把书影关掉（filter:none），翻完撤掉属性让影子',
+      '   240ms 淡回。静止态观感零变化；不碰透明度、不隐藏任何图片。 */',
+      '.book[data-layout="landscape"][data-wb-open] { filter: none !important; }',
+      '/* ★★★ R49（2026-10-18）：翻动中藏掉**库给硬页画的两层阴影**。',
+      '   佘先生最终澄清：「就是那个**背景和图片的边缘线**…**两边都有**…',
+      '   图片还没有归位时，就先划出一个线，线的位置到两个图片的轮廓」。',
+      '   R69 真机实测（拖半翻按住，活数据）：',
+      '     · .stf__hardShadow       x=125..390（左页位）266×332  z=14',
+      '     · .stf__hardInnerShadow  x=390..656（右页位）266×332  z=15',
+      '   两个矩形**各占一页**、合起来正好是摊开跨页；z 比页元素(11)高；',
+      '   渐变在 5% 处最浓 ⇒ 形成**一条清晰的竖直边线**；且**只在硬页',
+      '   （封面/封底）翻动时 display:block**（库 drawHardOuterShadow /',
+      '   drawHardInnerShadow）⇒ 完全对上「只有翻封面和后壳」「两边都有」',
+      '   「先划出一条线」。翻内页用 soft 阴影、位置在书内，所以看不到。',
+      '   ⚠ 前几轮逐层剥全漏了这两层（R59 只剥了 img/plate/book-page/',
+      '     fold-shade；R35 当时测的是书外木桌，而这两层在书内）。',
+      '   修法：翻动中 display:none，翻完由库自己恢复。不碰图片、不碰透明度。 */',
+      '.book[data-layout="landscape"][data-wb-open] .stf__hardShadow,',
+      '.book[data-layout="landscape"][data-wb-open] .stf__hardInnerShadow { display: none !important; }',
+      '/* ★★★ R50（2026-10-18）：翻动中把**书脊两侧的边缘阴影**淡出。',
+      '   佘先生第三轮澄清：「我指的是那个**背景和图片的边缘线**」「**两边都有**」。',
+      '   R74 逐层剥（藏掉 img 模拟"图片还没到"，再逐层删装饰，各截一张量化）：',
+      '     L0 只藏图 → 书脊两侧**两条明显深色竖带**',
+      '     L3 再藏 ::before(20% 宽过渡带) → 差 max=22（4.1% 像素）',
+      '     L4 再藏 ::after(2px 书脊竖线)   → 差 max=94（5.8% 像素）← 最明显的一层',
+      '     放大 4 倍的 A/B 图：藏掉后两条竖带**完全消失**（_shots_r74/spine_ab.png）',
+      '   这三层都是 **CSS 渐变**（书脊两侧 --left/--right 的 ::before 20% 宽渐变带、',
+      '   ::after 2px 深色竖线、.fold-shade 折痕）——和底色一样「瞬间就能画」，',
+      '   而照片要解码光栅化 ⇒ **线先出现、图片后到**；而且只在跨页成立',
+      '   （封面/封底翻动时书才从单页变跨页）⇒ 完全对上「只有翻封面和后壳」',
+      '   「两边都有」「加边缘阴影后才出现」。',
+      '   修法：data-wb-open 期间 opacity:0（220ms 淡出），翻完 220ms 淡回。',
+      '   ⚠ 只藏**装饰伪元素**，不碰图片、不碰底色、不动书与库。',
+      '   ⚠ 翻内页时 data-wb-open 不设 ⇒ 书脊阴影完全不受影响。 */',
+      '#book .book-page.--left::before, #book .book-page.--right::before,',
+      '#book .book-page.--left::after,  #book .book-page.--right::after {',
+      '  transition: opacity 220ms ease;',
+      '}',
+      '.book[data-layout="landscape"][data-wb-open] .book-page.--left::before,',
+      '.book[data-layout="landscape"][data-wb-open] .book-page.--right::before,',
+      '.book[data-layout="landscape"][data-wb-open] .book-page.--left::after,',
+      '.book[data-layout="landscape"][data-wb-open] .book-page.--right::after {',
+      '  opacity: 0 !important;',
+      '}',
+      '/* ★★★ R54（2026-10-18）：翻动中把**舞台暗角**关掉。',
+      '   佘先生圈图指出「左右两块矩形」后，R83 用 elementFromPoint 逐层问出来：',
+      '     .stage / .room 的背景 = radial-gradient(130% 120% at 50% 40%,',
+      '                                 transparent 40%, rgba(0,0,0,.22) 100%)',
+      '   两层叠加 ≈ 39% 黑 ⇒ 画面中间亮、四周暗（vignette）。书的不透明内容',
+      '   正好把中间挖空 ⇒ 书的外面就剩**一圈矩形暗框** —— 他说的「页面四周一圈」',
+      '   「左右两块」「背景和图片的边缘线」。翻封面时书一移动，这圈暗框跟着变形，',
+      '   看着就是「先划出一圈线」。',
+      '   实证：注入 background-image:none 后，那两块**完全消失**（Q1_no_gradient.png）。',
+      '   修法：data-wb-flip（由 JS 与 data-wb-open 同步挂到 <html>）期间关掉这两层渐变；',
+      '   翻完立刻恢复 ⇒ **静止态暗角一个字不动**。',
+      '   ⚠ .stage/.room 是 #book 的祖先，CSS 无法向上选择 ⇒ 用 <html> 上的属性。',
+      '   ⚠ 只动背景渐变，不碰图片、不碰书、不碰透明度值。 */',
+      'html[data-wb-flip] .stage, html[data-wb-flip] .room { background-image: none !important; }'
+    ].join('\n');
+    (document.head || document.documentElement).appendChild(css);
+
+    var live = false, quiet = 0;
+
+    function isFlipping() {
+      var edge = book.getAttribute('data-edge');
+      if (edge !== 'front' && edge !== 'back') { return false; }   // 只管封面/后壳
+      var a = book.querySelectorAll('article');
+      if (!a.length) { return false; }
+      var el = (edge === 'back') ? a[a.length - 1] : a[0];
+      var s = el.getAttribute('style');
+      if (!s) { return false; }
+      // 库 drawHard 每帧写 `transform: … rotateY(Ndeg)`；静止态 simpleDraw 不带 rotateY
+      if (s.indexOf('rotateY') >= 0) { return true; }
+      // 软页走 drawSoft：`clip-path` 多边形 + `rotate(Nrad)`
+      if (s.indexOf('clip-path') >= 0 && s.indexOf('rotate(') >= 0) { return true; }
+      return false;
+    }
+
+    setInterval(function () {
+      if (!book.isConnected) { return; }
+      if (isFlipping()) {
+        live = true;
+        quiet = 0;
+        if (!book.hasAttribute('data-wb-open')) {
+          book.setAttribute('data-wb-open', '');
+        }
+        // R54：舞台暗角跟着一起关（<html> 上的标记，CSS 用它选 .stage/.room）
+        if (!document.documentElement.hasAttribute('data-wb-flip')) {
+          document.documentElement.setAttribute('data-wb-flip', '');
+        }
+      } else if (live) {
+        // 掀动刚停。edge 已到 inside ⇒ 立刻撤（同值、不跳）；
+        // 否则（真回弹，edge 还是 front/back）先让库跑完收尾再撤，
+        // 之后由 CSS 的 760ms 过渡平滑滑回原位。
+        quiet++;
+        if (book.getAttribute('data-edge') === 'inside' || quiet >= 3) {
+          live = false;
+          quiet = 0;
+          book.removeAttribute('data-wb-open');
+          document.documentElement.removeAttribute('data-wb-flip');
+        }
+      }
+    }, 60);
+  })();
+
+
+
+  // ---- ★★★ R49b（2026-10-18）：照片页底色改透明，掐掉「矩形先于图片」的根 -----
+  //
+  // 佘先生的原话（这一轮把现象锁死）：
+  //   ①「应该是**两边都有**…翻开封面或者后壳时是让一张图片的显示变成两张，
+  //      这个时候**图片还没有归位**时，就**先划出一个线**，让图片到线的那个位置，
+  //      线的位置到**两个图片的轮廓**」
+  //   ②「我指的是那个**背景和图片的边缘线**」
+  //   ③「我记得当时为了加**边缘阴影**后才出现的问题」
+  //
+  // R72 受控实测（真机 vivo Z5，拖半翻按住 + 藏掉 img 模拟"图片还没到"那一瞬）：
+  //   T1 正常底色 + 藏图 → **一个跨页大小的深色矩形 rgb(41,44,38)** 压在木桌上，
+  //                        左边一块、右边一块，中间书脊折痕，边界清清楚楚
+  //   T2 底色透明 + 藏图 → 同一位置只剩**木桌**，矩形完全消失
+  // ⇒ 那个「矩形 / 轮廓 / 边缘线」的真身 = 照片页的**元素底色**：
+  //     `.art-page.photo{background:var(--ink)}`（#292c26 深色）。
+  //     纯色**当场就能画**，而照片位图要解码 + 光栅化几十~几百毫秒
+  //     ⇒ 先见矩形框、后见照片 ⇒「矩形的出现是瞬间的，图片的展开需要时间」。
+  //   边缘阴影（cover-scrim / outer-x / outer-y / fold-shade）给这个色块
+  //     加了边界强化 ⇒「加边缘阴影后才出现」——与他的记忆吻合。
+  //
+  // 修法：把这个**底色**改成透明。图片没到时透出木桌（不会有框），图片到了才有边界。
+  //   · 静止/落定态：照片 width/height:100% + object-fit:cover 铺满整页
+  //     ⇒ 底色永远看不见 ⇒ **观感零变化**（R71 实测注入前后 max diff = 0）
+  //   · ⚠ 只匹配 `.art-page.photo`：封面与全部内页都是它；封底是
+  //     `.art-page.cloth`（布纹、无 img）⇒ 不受影响，保持原底色
+  //   · ⚠ 纯说明/文字页没有 .photo ⇒ 不受影响
+  //   · ⛔ 不碰图片本身（不透明、不缩放、不隐藏、不羽化）—— 只改**元素底色**
+  (function patchPhotoPageTransparentBg() {
+    var st = document.createElement('style');
+    st.id = 'compat-photo-bg';
+    st.textContent = '#book article.art-page.photo { background: transparent !important; }';
+    (document.head || document.documentElement).appendChild(st);
+  })();
+
+  // ---- 补回老内核不认的 CSS 简写属性 `inset` -----------------------------  // 书的灯箱（Phase 35「照片上双击 ⇒ 这张单独全屏看」）靠这一条铺满整个视口：
   //     .lightbox { position: fixed; inset: 0; z-index: 300; background: rgb(16 18 14 / 95%); }
   // `inset` 这个**简写**要 Chrome **87+**（本机老内核实测 83）⇒ 老内核把**整条声明丢弃**
   // ⇒ 四个偏移全落回 `auto` ⇒ `position:fixed` + 全 auto + 子元素又都是绝对定位
@@ -215,6 +405,74 @@
     st.id = 'compat-lightbox-inset';
     st.textContent = '.lightbox { top: 0; right: 0; bottom: 0; left: 0; }';
     (document.head || document.documentElement).appendChild(st);
+  })();
+
+  // ---- 翻页时"框先画、图片后填"（佘先生：矩形瞬间出现、图片展开需要时间）----
+  // 现象（2026-10-16，佘先生逐轮纠正后的精确描述）：
+  //   「一个矩形、**和画册摊开的大小相同**，翻封面/后壳时**直接出现在背景上**；
+  //     注意**图片的展开需要时间，而矩形的出现是瞬间出现的**」
+  //
+  // 根源：翻页第一帧，翻页库把下一跨页的**两个页面元素**从 display:none 变可见——
+  //   这一步是瞬间的，元素框（左页+右页拼起来正好是跨页大小）连同它外边界立刻
+  //   被画到木桌上；而框里的 <img> 位图要**解码 + 光栅化**，晚一拍才填进去。
+  //   ⇒ 看到的顺序就是"矩形先出现 → 图片随后展开"。不是图片太亮、不是边缘太硬。
+  //   （这也解释了为什么过去几轮反复取证都看不到：我总用"慢速分步拖"定格，
+  //    等于给了图片足够的解码时间；而真机连拍只有 ~3fps，抓不到那几十毫秒。）
+  //
+  // 修法：**让图片在翻页那一刻就已经解码好**，元素框与图片就能同帧画出来。
+  //   ⛔ 绝不做 R38/R42/R44 那套（把图片两侧弄透明、整页淡出）—— 佘先生明确反对：
+  //      「**不要透明图片啊**…不是让你直接把图片的两侧透明」。这里一个透明度都不碰。
+  //   ⚠ 只改壳；**书一个字不改**（不动 assets、不改 index.html）。
+  (function patchPageImageWarmup() {
+    var book = document.querySelector('#book') || document.querySelector('.book');
+    if (!book) { return; }
+    var imgs = book.querySelectorAll('article img');
+    if (!imgs.length) { return; }
+    var list = [];
+    for (var i = 0; i < imgs.length; i++) { list.push(imgs[i]); }
+
+    // ① 同步解码：告诉浏览器绘制这张图时**不要**"先画占位、后补图"
+    for (var j = 0; j < list.length; j++) {
+      try { list[j].setAttribute('decoding', 'sync'); } catch (e) { }
+    }
+
+    function warm() {
+      // ② 预解码：把每张图的解码提前做掉，翻页时位图已在内存里
+      for (var k = 0; k < list.length; k++) {
+        try {
+          var p = list[k].decode && list[k].decode();
+          if (p && p.catch) { p.catch(function () { }); }
+        } catch (e) { }
+      }
+      // ③ 离屏预热（佘先生选的"更彻底"）：同一 URL 再画一份在屏幕外，
+      //   逼浏览器把位图真正光栅化好；留在视口外，用户永远看不到，之后移除。
+      //   ⚠ 不能去动真实页面元素的可见性 —— 那是翻页库用 display:none 管的，
+      //     强行显示会把布局打乱。这里只用一份**副本**在屏幕外预热。
+      try {
+        var box = document.createElement('div');
+        box.setAttribute('aria-hidden', 'true');
+        box.style.cssText = 'position:fixed;left:-12000px;top:0;width:600px;height:900px;'
+                          + 'overflow:hidden;pointer-events:none;z-index:-1;';
+        for (var m = 0; m < list.length; m++) {
+          var im = document.createElement('img');
+          im.src = list[m].getAttribute('src');
+          im.width = 600;
+          im.height = 900;
+          box.appendChild(im);
+        }
+        document.body.appendChild(box);
+        setTimeout(function () {
+          if (box.parentNode) { box.parentNode.removeChild(box); }
+        }, 1500);
+      } catch (e) { }
+    }
+
+    // 书初始化完再预热，别挡着首屏
+    if (document.readyState === 'complete') {
+      setTimeout(warm, 200);
+    } else {
+      window.addEventListener('load', function () { setTimeout(warm, 200); });
+    }
   })();
 
   // ---- 补回老内核不认的 flex `gap` ---------------------------------------
