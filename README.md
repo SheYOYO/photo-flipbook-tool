@@ -1503,4 +1503,12 @@ with socket.socket() as s:
 > 测试期间就撞到过：`8770` 上挂着一个早先启动、一直没关的 `pythonw.exe`（属于工作台服务）。
 > 判断办法：`netstat -ano -p TCP` 找到监听 `:8770` 的 PID → `tasklist` 看进程名。
 > 想清掉就打开工作台点右上角「关闭工具」，或按 PID 结束它。
+---
 
+## 手机端（Android）
+
+`android/` 是同一套画册的手机壳：Kotlin + Compose 工作台 + WebView 书页，
+书页渲染与桌面版同源（同一份 HTML/CSS/JS）。
+
+- 结构与构建：[`android/README.md`](android/README.md)
+- 已知问题（含未修复点）：[`android/KNOWN_ISSUES.md`](android/KNOWN_ISSUES.md)
